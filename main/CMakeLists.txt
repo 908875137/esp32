@@ -14,6 +14,8 @@ set(srcs
     "web/web_server.c"
     # Input (button polling task)
     "input/button.c"
+    # Text rendering (FreeType Chinese text overlay)
+    "text/text_renderer.c"
     )
 
 idf_component_register(SRCS ${srcs}
@@ -26,6 +28,7 @@ idf_component_register(SRCS ${srcs}
                                  "config"
                                  "events"
                                  "storage"
+                                 "text"
                     PRIV_REQUIRES
                         esp_driver_spi
                         esp_driver_gpio
@@ -36,4 +39,5 @@ idf_component_register(SRCS ${srcs}
                         esp_http_server
                         esp_http_client
                         mbedtls
+                        spiffs
 )

@@ -1,12 +1,19 @@
 # ESP32-S3 16MB Flash — Custom partition table for ThinkINK EPD
 # Name,   Type, SubType, Offset,   Size
-# Note: firmware with embedded 768KB image.bin + WiFi = ~2MB
+#
+# Layout:
+#   0x000000 → bootloader          (reserved,   ~32KB)
+#   0x008000 → partition table     (reserved,    ~4KB)
+#   0x009000 → nvs                 (24KB)
+#   0x00F000 → phy_init            (4KB)
+#   0x010000 → factory app         (4MB  — firmware + WiFi + HTTPS + PNG decoder + dither)
+#   0x410000 → font_storage        (10MB — LittleFS for NotoSansCJKsc-Subset.otf ~8MB)
+#   0xE10000 → (unused, ~2MB)
 
-# NVS
 nvs,      data, nvs,     0x9000,   0x6000
 
-# PHY init data
 phy_init, data, phy,     0xf000,   0x1000
 
-# Factory app (4MB — enough for image.bin + WiFi + HTTP)
 factory,  app,  factory, 0x10000,  0x400000
+
+fonts,    data, spiffs,  0x410000, 0xA00000

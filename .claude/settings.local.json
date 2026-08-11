@@ -35,7 +35,17 @@
       "Bash(openssl s_client -connect aigc-output-image-1326893053.cos.ap-guangzhou.myqcloud.com:443 -servername aigc-output-image-1326893053.cos.ap-guangzhou.myqcloud.com -showcerts)",
       "Bash(awk '/^-----BEGIN CERTIFICATE-----$/{n++} n==1')",
       "Bash(awk '/^-----BEGIN CERTIFICATE-----$/{n++} n==2')",
-      "Bash(ls -la \"/c/Users/Administrator/.espressif/\" 2>/dev/null; echo \"---\"; ls \"/c/esp/v6.0.2/esp-idf/tools/\" 2>/dev/null | head -10)"
+      "Bash(ls -la \"/c/Users/Administrator/.espressif/\" 2>/dev/null; echo \"---\"; ls \"/c/esp/v6.0.2/esp-idf/tools/\" 2>/dev/null | head -10)",
+      "Bash(/c/Users/Administrator/.espressif/python_env/idf6.0_py3.14_env/Scripts/python /c/esp/v6.0.2/esp-idf/tools/idf.py size-components)",
+      "Bash(ls /c/Users/Administrator/.espressif/python_env/)",
+      "Read(//c/Espressif/tools/python/v6.0.2/venv/Scripts/**)",
+      "Bash(/c/Espressif/tools/python/v6.0.2/venv/Scripts/python /c/esp/v6.0.2/esp-idf/tools/idf.py size-components)",
+      "Bash(/c/Espressif/tools/python/v6.0.2/venv/Scripts/python /c/esp/v6.0.2/esp-idf/tools/idf.py -DSDKCONFIG=C:/Users/Administrator/VsCodeProjects/esp32/sdkconfig size-components)",
+      "Bash(SET PATH=C:\\\\Espressif\\\\tools\\\\python\\\\v6.0.2\\\\venv\\\\Scripts)",
+      "Bash(C:\\\\Espressif\\\\tools\\\\ninja\\\\1.12.1)",
+      "Bash(C:\\\\Espressif\\\\tools\\\\cmake\\\\4.0.3\\\\bin)",
+      "Bash(C:\\\\Users\\\\Administrator\\\\.espressif\\\\tools\\\\xtensa-esp-elf\\\\esp-15.2.0_20251204\\\\xtensa-esp-elf\\\\bin)",
+      "Bash(%PATH%)"
     ]
   }
 }

@@ -158,6 +158,7 @@ esp_err_t ai_generate_daily_quote(daily_quote_t *quote) {
     if (!req_str) return ESP_ERR_NO_MEM;
 
     ESP_LOGI(TAG, "DeepSeek request: %d bytes", (int)strlen(req_str));
+    ESP_LOGI(TAG, "DeepSeek body: %s", req_str);
 
     int status = 0;
     char *resp = http_post_json(AI_CHAT_URL, req_str, AI_CHAT_TIMEOUT_MS, &status);
@@ -276,6 +277,7 @@ esp_err_t ai_generate_image(const char *prompt, const char *size,
 
     int prompt_len = (int)strlen(prompt);
     ESP_LOGI(TAG, "Image request: %d bytes, prompt=%d chars", (int)strlen(req_str), prompt_len);
+    ESP_LOGI(TAG, "Image body: %s", req_str);
 
     int status = 0;
     char *resp = http_post_json(AI_IMAGE_URL, req_str, AI_IMAGE_TIMEOUT_MS, &status);
@@ -286,7 +288,7 @@ esp_err_t ai_generate_image(const char *prompt, const char *size,
         return ESP_FAIL;
     }
 
-    ESP_LOGI(TAG, "Image response: %d bytes", (int)strlen(resp));
+    ESP_LOGI(TAG, "Image response (%d bytes): %s", (int)strlen(resp), resp);
 
     cJSON *resp_root = cJSON_Parse(resp);
     if (!resp_root) {
@@ -351,7 +353,7 @@ void ai_build_image_prompt(const daily_quote_t *quote,
     const char *m = quote && quote->mood[0]    ? quote->mood    : "";
 
     snprintf(buf, buf_size,
-        "为 7.5 英寸黑白红三色电子墨水屏创作一幅每日艺术作品。画面尺寸 854×512，横向构图。\n\n"
+        "为 7.5 英寸屏创作一幅每日艺术作品。画面尺寸 854×512，横向构图。\n\n"
         "【核心文字】\n"
         "这是一句来自作者\"%s\"、作品/出处\"%s\"的文字：\"%s\"。\n"
         "这句话的情绪：%s。\n\n"
@@ -371,10 +373,9 @@ void ai_build_image_prompt(const daily_quote_t *quote,
         "底部区域尽量选择低细节、低干扰的视觉区域，方便后续显示文字。\n"
         "不要添加任何文字、字幕、Logo、水印。\n\n"
         "【色彩】\n"
-        "最终适合黑白红三色电子墨水屏。\n"
         "避免大面积纯黑，保持明亮、通透、有层次的画面。\n"
         "允许出现明亮、温暖、轻松、可爱、浪漫、快乐的视觉作品。\n"
-        "黑色、白色、红色应能形成清晰的视觉层次。\n\n"
+        "颜色应能形成清晰的视觉层次。\n\n"
         "【整体感觉】\n"
         "电影感、文学感、艺术感、高级、克制、有故事、有画面感。\n"
         "不要像企业宣传海报、励志海报、名言卡片。\n"

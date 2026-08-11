@@ -15,3 +15,4 @@ dependencies:
   #   # All dependencies of `main` are public by default.
   #   public: true
   espressif/cjson: '*'
+  espressif/freetype: ^2.14.2

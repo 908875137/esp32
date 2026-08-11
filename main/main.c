@@ -85,40 +85,60 @@ static void epd_show_default_image(void) {
     epd_show_rgb565(image_bin_start);
 }
 
-/* AI pipeline — two-stage: DeepSeek quote → Hunyuan image */
+/* Two-stage AI pipeline */
 static void run_ai_pipeline(void) {
     ESP_LOGI(TAG, "========== AI Daily Art Pipeline ==========");
 
     /* ---- Stage 1: DeepSeek daily quote ---- */
-    daily_quote_t quote;
-    esp_err_t err = ai_generate_daily_quote(&quote);
+    daily_quote_t *quote = (daily_quote_t *)calloc(1, sizeof(daily_quote_t));
+    if (!quote) {
+        ESP_LOGE(TAG, "Failed to alloc daily_quote_t");
+        return;
+    }
+    esp_err_t err = ai_generate_daily_quote(quote);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "Daily quote failed — skipping image generation");
+        free(quote);
         return;
     }
 
-    ESP_LOGI(TAG, "Daily quote: \"%s\" — %s (%s)", quote.quote, quote.author, quote.source);
+    ESP_LOGI(TAG, "Daily quote: \"%s\" — %s (%s)", quote->quote, quote->author, quote->source);
 
     /* ---- Build image prompt from quote ---- */
-    char image_prompt[AI_CHAT_RESPONSE_MAX_LEN];
-    ai_build_image_prompt(&quote, image_prompt, sizeof(image_prompt));
+    char *image_prompt = (char *)malloc(AI_CHAT_RESPONSE_MAX_LEN);
+    if (!image_prompt) {
+        ESP_LOGE(TAG, "Failed to alloc image prompt");
+        free(quote);
+        return;
+    }
+    ai_build_image_prompt(quote, image_prompt, AI_CHAT_RESPONSE_MAX_LEN);
+    free(quote);
 
     /* ---- Stage 2: Hunyuan image generation ---- */
-    ai_image_result_t img_result;
-    err = ai_generate_image(image_prompt, "854x512", &img_result);
+    ai_image_result_t *img_result = (ai_image_result_t *)calloc(1, sizeof(ai_image_result_t));
+    if (!img_result) {
+        ESP_LOGE(TAG, "Failed to alloc ai_image_result_t");
+        free(image_prompt);
+        return;
+    }
+    err = ai_generate_image(image_prompt, "854x512", img_result);
+    free(image_prompt);
+
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "Image generation failed — skipping download");
+        free(img_result);
         return;
     }
 
-    ESP_LOGI(TAG, "Image URL: %.100s...", img_result.image_url);
-    if (img_result.revised_prompt[0]) {
-        ESP_LOGI(TAG, "Revised prompt: %.200s...", img_result.revised_prompt);
+    ESP_LOGI(TAG, "Image URL: %.100s...", img_result->image_url);
+    if (img_result->revised_prompt[0]) {
+        ESP_LOGI(TAG, "Revised prompt: %.200s...", img_result->revised_prompt);
     }
 
     /* ---- Stage 3: Download → Decode → Crop → Scale → RGB565 ---- */
     uint8_t *rgb565 = NULL;
-    err = image_download_and_decode(img_result.image_url, &rgb565);
+    err = image_download_and_decode(img_result->image_url, &rgb565);
+    free(img_result);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "Image pipeline failed — skipping EPD update");
         free(rgb565);
