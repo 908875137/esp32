@@ -22,13 +22,7 @@
 #define TEXT_BOTTOM_MARGIN   24
 #define TEXT_LINE_SPACING    8
 #define TEXT_SOURCE_GAP      10
-
-/* ---- rendered glyph bitmap upper bound (one glyph, 72pt raw) ---- */
-#define TEXT_GLYPH_MAX_W     128
-#define TEXT_GLYPH_MAX_H     128
-
-/* ---- text area detection region ---- */
-#define TEXT_AREA_Y_START    380   /* scan this Y range for average bg luminance */
+#define TEXT_AREA_Y_START    380
 #define TEXT_AREA_Y_END      480
 
 #ifdef __cplusplus

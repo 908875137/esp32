@@ -1,14 +1,15 @@
 /*
- * main.c — ThinkINK EPD Phase 3: DeepSeek + Hunyuan two-stage AI pipeline
+ * main.c — ThinkINK EPD Phase 3: DeepSeek + Hunyuan + text overlay
  *
  * Flow:
  *   1. Init hardware (SPI I/O, EPD, button)
- *   2. Init WiFi manager
+ *   2. Init WiFi manager + text renderer (FreeType + SPIFFS)
  *   3. Check NVS for saved WiFi credentials
  *   4. No config → SoftAP provisioning
  *   5. Has config → STA connect
- *   6. Connected → DeepSeek daily quote → Hunyuan image → download → decode → dither → EPD
- *   7. Button long-press → enter provisioning mode
+ *   6. Connected → DeepSeek quote → Hunyuan image → download → decode RGBA
+ *   7. Text overlay → RGB565 convert → dither → EPD display
+ *   8. Button long-press → enter provisioning mode
  */
 #include <stdio.h>
 #include <stdint.h>
@@ -33,6 +34,9 @@
 
 /* Image subsystem */
 #include "image_decoder.h"
+
+/* Text rendering */
+#include "text_renderer.h"
 
 /* Input subsystem */
 #include "button.h"
@@ -90,29 +94,37 @@ static void run_ai_pipeline(void) {
     ESP_LOGI(TAG, "========== AI Daily Art Pipeline ==========");
 
     /* ---- Stage 1: DeepSeek daily quote ---- */
-    daily_quote_t *quote = (daily_quote_t *)calloc(1, sizeof(daily_quote_t));
-    if (!quote) {
+    daily_quote_t *q = (daily_quote_t *)calloc(1, sizeof(daily_quote_t));
+    if (!q) {
         ESP_LOGE(TAG, "Failed to alloc daily_quote_t");
         return;
     }
-    esp_err_t err = ai_generate_daily_quote(quote);
+    esp_err_t err = ai_generate_daily_quote(q);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "Daily quote failed — skipping image generation");
-        free(quote);
+        free(q);
         return;
     }
 
-    ESP_LOGI(TAG, "Daily quote: \"%s\" — %s (%s)", quote->quote, quote->author, quote->source);
+    ESP_LOGI(TAG, "Daily quote: \"%s\" — %s (%s)", q->quote, q->author, q->source);
+
+    /* Build source line early (while q still lives) */
+    char source_buf[512];
+    if (q->source[0]) {
+        snprintf(source_buf, sizeof(source_buf), "—— %s（%s）", q->author, q->source);
+    } else {
+        snprintf(source_buf, sizeof(source_buf), "—— %s", q->author);
+    }
 
     /* ---- Build image prompt from quote ---- */
     char *image_prompt = (char *)malloc(AI_CHAT_RESPONSE_MAX_LEN);
     if (!image_prompt) {
         ESP_LOGE(TAG, "Failed to alloc image prompt");
-        free(quote);
+        free(q);
         return;
     }
-    ai_build_image_prompt(quote, image_prompt, AI_CHAT_RESPONSE_MAX_LEN);
-    free(quote);
+    ai_build_image_prompt(q, image_prompt, AI_CHAT_RESPONSE_MAX_LEN);
+    free(q);  /* quote no longer needed past this point */
 
     /* ---- Stage 2: Hunyuan image generation ---- */
     ai_image_result_t *img_result = (ai_image_result_t *)calloc(1, sizeof(ai_image_result_t));
@@ -135,21 +147,37 @@ static void run_ai_pipeline(void) {
         ESP_LOGI(TAG, "Revised prompt: %.200s...", img_result->revised_prompt);
     }
 
-    /* ---- Stage 3: Download → Decode → Crop → Scale → RGB565 ---- */
-    uint8_t *rgb565 = NULL;
-    err = image_download_and_decode(img_result->image_url, &rgb565);
+    /* ---- Stage 3: Download → Decode → RGBA8 ---- */
+    uint8_t *rgba = NULL;
+    image_info_t img_info;
+    err = image_download_and_decode_rgba(img_result->image_url, &rgba, &img_info);
     free(img_result);
     if (err != ESP_OK) {
-        ESP_LOGE(TAG, "Image pipeline failed — skipping EPD update");
-        free(rgb565);
+        ESP_LOGE(TAG, "Image download/decode failed — skipping EPD update");
+        free(rgba);
+        return;
+    }
+
+    ESP_LOGI(TAG, "RGBA8 framebuffer ready (%d bytes)", 800 * 480 * 4);
+
+    /* ---- Stage 4: Text overlay on RGBA framebuffer ---- */
+    err = text_render_overlay(rgba, 800, 480, source_buf, source_buf);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "Text overlay failed — showing image without text");
+    }
+
+    /* ---- Stage 5: RGBA → RGB565 → Dither → EPD ---- */
+    uint8_t *rgb565 = NULL;
+    err = image_rgba_to_rgb565(rgba, 800, 480, &rgb565);
+    free(rgba);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "RGBA→RGB565 failed — skipping EPD update");
         return;
     }
 
     ESP_LOGI(TAG, "RGB565 buffer ready (%d bytes)", 800 * 480 * 2);
 
-    /* ---- Stage 4: Dither + EPD display ---- */
     epd_show_rgb565(rgb565);
-
     free(rgb565);
     ESP_LOGI(TAG, "========== AI Daily Art Pipeline complete ==========");
 }
@@ -223,7 +251,15 @@ int app_main(void) {
     printf("  ThinkINK EPD — Phase 3: Daily Art\n");
     printf("========================================\n\n");
 
-    /* ---- 1. Init WiFi manager (includes NVS + netif + event loop) ---- */
+    /* ---- 1. Init text renderer (SPIFFS + FreeType) ---- */
+    ESP_LOGI(TAG, "Initialising text renderer...");
+    esp_err_t init_err = text_renderer_init();
+    if (init_err != ESP_OK) {
+        ESP_LOGE(TAG, "text_renderer_init failed: %s", esp_err_to_name(init_err));
+        /* Non-fatal — we can still display images without text */
+    }
+
+    /* ---- 2. Init WiFi manager (includes NVS + netif + event loop) ---- */
     ESP_LOGI(TAG, "Initialising WiFi manager...");
     esp_err_t err = wifi_manager_init();
     if (err != ESP_OK) {

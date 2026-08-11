@@ -1,14 +1,12 @@
 /*
- * image_pipeline.c
+ * image_decoder.c
  *
- * Step 3-5: Download PNG → Decode → Center-crop → RGB565
+ * Download PNG → Decode → (text overlay) → Center-crop → RGBA or RGB565.
  *
- *   GET data[0].url (signed COS URL)
- *   → accumulate PNG bytes
- *   → lodepng_decode32 → RGBA
- *   → center-crop to 800:480 aspect
- *   → bilinear scale to 800×480
- *   → convert to RGB565
+ * Split pipeline:
+ *   1. image_download_and_decode_rgba  → RGBA8 framebuffer  (for text overlay)
+ *   2. text_render_overlay()            → draw Chinese text on RGBA
+ *   3. image_rgba_to_rgb565           → final dither-ready buffer
  *
  * Dependencies:
  *   - lodepng          (single-file PNG decoder)
@@ -129,14 +127,16 @@ static esp_err_t http_event_handler(esp_http_client_event_t *evt) {
 }
 
 /* ================================================================
- * Public API
+ * Public API — Part 1: RGBA output (for text overlay)
  * ================================================================ */
 
-esp_err_t image_download_and_decode(const char *url,
-                                    uint8_t **rgb565_out) {
-    if (!url || !rgb565_out) return ESP_ERR_INVALID_ARG;
+esp_err_t image_download_and_decode_rgba(const char *url,
+                                          uint8_t **rgba_out,
+                                          image_info_t *info) {
+    if (!url || !rgba_out) return ESP_ERR_INVALID_ARG;
 
-    *rgb565_out = NULL;
+    *rgba_out = NULL;
+    if (info) { info->width = 0; info->height = 0; }
 
     /* ---- 1. Download PNG ---- */
     ESP_LOGI(TAG, "Downloading PNG from URL (first 80 chars): %.80s...", url);
@@ -276,31 +276,30 @@ esp_err_t image_download_and_decode(const char *url,
         return ESP_FAIL;
     }
 
-    /* ---- 3. Center-crop + bilinear scale to 800×480 RGB565 ---- */
+    if (info) { info->width = png_w; info->height = png_h; }
+
+    /* ---------- 3. Center-crop + bilinear scale to 800×480 RGBA8 ---------- */
 
     #define TARGET_W  800
     #define TARGET_H  480
 
-    const float target_aspect = (float)TARGET_W / (float)TARGET_H;   /* 1.6667 */
+    const float target_aspect = (float)TARGET_W / (float)TARGET_H;
     const float src_aspect    = (float)png_w / (float)png_h;
 
     int crop_w, crop_h, crop_ox, crop_oy;
 
     if (src_aspect > target_aspect) {
-        /* Source is wider → crop left/right, keep full height */
         crop_h = (int)png_h;
         crop_w = (int)((float)png_h * target_aspect + 0.5f);
         crop_oy = 0;
         crop_ox = ((int)png_w - crop_w) / 2;
     } else {
-        /* Source is taller (or equal) → crop top/bottom, keep full width */
         crop_w = (int)png_w;
         crop_h = (int)((float)png_w / target_aspect + 0.5f);
         crop_ox = 0;
         crop_oy = ((int)png_h - crop_h) / 2;
     }
 
-    /* Clamp */
     if (crop_ox < 0) crop_ox = 0;
     if (crop_oy < 0) crop_oy = 0;
     if (crop_ox + crop_w > (int)png_w) crop_w = (int)png_w - crop_ox;
@@ -309,17 +308,15 @@ esp_err_t image_download_and_decode(const char *url,
     ESP_LOGI(TAG, "Center crop: src=%u×%u → crop=(%d,%d) %d×%d → scale → %d×%d",
              png_w, png_h, crop_ox, crop_oy, crop_w, crop_h, TARGET_W, TARGET_H);
 
-    /* ---- 4. Bilinear scale from crop region to 800×480 RGB565 ---- */
-
-    const int out_size = TARGET_W * TARGET_H * 2;   /* 768000 bytes */
+    /* allocate RGBA8 output buffer */
+    const int out_size = TARGET_W * TARGET_H * 4;   /* 1 536 000 bytes */
     uint8_t *out = (uint8_t *)malloc(out_size);
     if (!out) {
-        ESP_LOGE(TAG, "OOM: RGB565 output buffer (%d bytes)", out_size);
+        ESP_LOGE(TAG, "OOM: RGBA8 output buffer (%d bytes)", out_size);
         free(rgba);
         return ESP_ERR_NO_MEM;
     }
 
-    /* Scale factors: source crop region → target dimensions */
     float sx = (float)(crop_w - 1) / (float)(TARGET_W - 1);
     float sy = (float)(crop_h - 1) / (float)(TARGET_H - 1);
 
@@ -337,50 +334,64 @@ esp_err_t image_download_and_decode(const char *url,
             if (ix >= crop_w - 1) { ix = crop_w - 2; fx_frac = 1.0f; }
             if (ix < 0) { ix = 0; fx_frac = 0.0f; }
 
-            /* Source pixel addresses in RGBA buffer */
-            int s0 = ((crop_oy + iy)     * (int)png_w + (crop_ox + ix))     * 4;   /* top-left */
-            int s1 = ((crop_oy + iy)     * (int)png_w + (crop_ox + ix + 1)) * 4;   /* top-right */
-            int s2 = ((crop_oy + iy + 1) * (int)png_w + (crop_ox + ix))     * 4;   /* bottom-left */
-            int s3 = ((crop_oy + iy + 1) * (int)png_w + (crop_ox + ix + 1)) * 4;   /* bottom-right */
+            int s0 = ((crop_oy + iy)     * (int)png_w + (crop_ox + ix))     * 4;
+            int s1 = ((crop_oy + iy)     * (int)png_w + (crop_ox + ix + 1)) * 4;
+            int s2 = ((crop_oy + iy + 1) * (int)png_w + (crop_ox + ix))     * 4;
+            int s3 = ((crop_oy + iy + 1) * (int)png_w + (crop_ox + ix + 1)) * 4;
 
-            /* Bilinear interpolation for each channel */
-            float r = (1.0f - fy_frac) * ((1.0f - fx_frac) * (float)rgba[s0 + 0] + fx_frac * (float)rgba[s1 + 0])
-                   +           fy_frac  * ((1.0f - fx_frac) * (float)rgba[s2 + 0] + fx_frac * (float)rgba[s3 + 0]);
-
-            float g = (1.0f - fy_frac) * ((1.0f - fx_frac) * (float)rgba[s0 + 1] + fx_frac * (float)rgba[s1 + 1])
-                   +           fy_frac  * ((1.0f - fx_frac) * (float)rgba[s2 + 1] + fx_frac * (float)rgba[s3 + 1]);
-
-            float b = (1.0f - fy_frac) * ((1.0f - fx_frac) * (float)rgba[s0 + 2] + fx_frac * (float)rgba[s2 + 2])
-                   +           fy_frac  * ((1.0f - fx_frac) * (float)rgba[s2 + 2] + fx_frac * (float)rgba[s3 + 2]);
-
-            /* RGB → RGB565 */
-            int r5 = (int)(r + 0.5f);
-            int g6 = (int)(g + 0.5f);
-            int b5 = (int)(b + 0.5f);
-            if (r5 > 255) r5 = 255;
-            if (r5 < 0) r5 = 0;
-            if (g6 > 255) g6 = 255;
-            if (g6 < 0) g6 = 0;
-            if (b5 > 255) b5 = 255;
-            if (b5 < 0) b5 = 0;
-
-            uint16_t rgb565 = (uint16_t)(((r5 >> 3) << 11) | ((g6 >> 2) << 5) | (b5 >> 3));
-
-            int out_idx = (dy * TARGET_W + dx) * 2;
-            out[out_idx]     = (uint8_t)(rgb565 & 0xFF);
-            out[out_idx + 1] = (uint8_t)(rgb565 >> 8);
+            for (int ch = 0; ch < 4; ch++) {
+                float v = (1.0f - fy_frac) * ((1.0f - fx_frac) * (float)rgba[s0 + ch] + fx_frac * (float)rgba[s1 + ch])
+                       +           fy_frac  * ((1.0f - fx_frac) * (float)rgba[s2 + ch] + fx_frac * (float)rgba[s3 + ch]);
+                int iv = (int)(v + 0.5f);
+                if (iv > 255) iv = 255;
+                if (iv < 0) iv = 0;
+                int out_idx = (dy * TARGET_W + dx) * 4;
+                out[out_idx + ch] = (uint8_t)iv;
+            }
         }
-
-        /* Feed watchdog every 8 rows (bilinear float math is slow) */
-        if ((dy & 0x07) == 0) {
-            vTaskDelay(1);
-        }
+        if ((dy & 0x07) == 0) vTaskDelay(1);
     }
 
     free(rgba);
 
-    ESP_LOGI(TAG, "Scaled to 800×480 RGB565 (%d bytes)", out_size);
+    ESP_LOGI(TAG, "Scaled to %d×%d RGBA8 (%d bytes)", TARGET_W, TARGET_H, out_size);
 
+    *rgba_out = out;
+    return ESP_OK;
+}
+
+/* ================================================================
+ * Public API — Part 2: RGBA → RGB565 conversion
+ * ================================================================ */
+
+esp_err_t image_rgba_to_rgb565(const uint8_t *rgba,
+                                int W, int H,
+                                uint8_t **rgb565_out) {
+    if (!rgba || !rgb565_out) return ESP_ERR_INVALID_ARG;
+    if (W <= 0 || H <= 0) return ESP_ERR_INVALID_ARG;
+
+    const int out_size = W * H * 2;
+    uint8_t *out = (uint8_t *)malloc(out_size);
+    if (!out) {
+        ESP_LOGE(TAG, "OOM: RGB565 output buffer (%d bytes)", out_size);
+        return ESP_ERR_NO_MEM;
+    }
+
+    for (int y = 0; y < H; y++) {
+        for (int x = 0; x < W; x++) {
+            int in_idx = (y * W + x) * 4;
+            int r = rgba[in_idx + 0];
+            int g = rgba[in_idx + 1];
+            int b = rgba[in_idx + 2];
+            uint16_t rgb565 = (uint16_t)(((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3));
+            int out_idx = (y * W + x) * 2;
+            out[out_idx]     = (uint8_t)(rgb565 & 0xFF);
+            out[out_idx + 1] = (uint8_t)(rgb565 >> 8);
+        }
+        if ((y & 0x1F) == 0) vTaskDelay(1);
+    }
+
+    ESP_LOGI(TAG, "RGBA→RGB565: %d×%d (%d bytes)", W, H, out_size);
     *rgb565_out = out;
     return ESP_OK;
 }

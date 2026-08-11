@@ -45,7 +45,26 @@
       "Bash(C:\\\\Espressif\\\\tools\\\\ninja\\\\1.12.1)",
       "Bash(C:\\\\Espressif\\\\tools\\\\cmake\\\\4.0.3\\\\bin)",
       "Bash(C:\\\\Users\\\\Administrator\\\\.espressif\\\\tools\\\\xtensa-esp-elf\\\\esp-15.2.0_20251204\\\\xtensa-esp-elf\\\\bin)",
-      "Bash(%PATH%)"
+      "Bash(%PATH%)",
+      "Bash(export IDF_PYTHON_ENV_PATH=\"/c/Espressif/tools/python/v6.0.2/venv\")",
+      "Bash(cmd.exe /c \"C:\\\\Espressif\\\\tools\\\\python\\\\v6.0.2\\\\venv\\\\Scripts\\\\python.exe C:\\\\esp\\\\v6.0.2\\\\esp-idf\\\\tools\\\\idf.py size-components 2>&1\")",
+      "Bash(grep -E \"\\\\.map$|project\\\\.elf|size\")",
+      "Bash(/c/Espressif/tools/python/v6.0.2/venv/Scripts/python /c/esp/v6.0.2/esp-idf/tools/idf.py build)",
+      "Bash(cmd.exe /c \"C:\\\\Espressif\\\\tools\\\\python\\\\v6.0.2\\\\venv\\\\Scripts\\\\python.exe C:\\\\esp\\\\v6.0.2\\\\esp-idf\\\\tools\\\\idf.py build 2>&1 | tail -30\")",
+      "Bash(export IDF_PYTHON_ENV_PATH=\"C:\\\\Espressif\\\\tools\\\\python\\\\v6.0.2\\\\venv\")",
+      "Bash(\"C:\\\\Espressif\\\\tools\\\\python\\\\v6.0.2\\\\venv\\\\Scripts\\\\python.exe\" \"C:\\\\esp\\\\v6.0.2\\\\esp-idf\\\\tools\\\\idf.py\" build)",
+      "Bash(export MSYSTEM=)",
+      "Bash(export MSYS=\"no\")",
+      "Bash(unset MSYSTEM)",
+      "Bash(unset MSYS)",
+      "Bash(/c/Espressif/tools/python/v6.0.2/venv/Scripts/python.exe /c/esp/v6.0.2/esp-idf/tools/idf.py build)",
+      "Bash(/c/Espressif/tools/python/v6.0.2/venv/Scripts/python -m esp_idf_monitor --print-filter=\"info\")",
+      "Bash(cmd.exe /c \"set IDF_PYTHON_ENV_PATH=C:\\\\Espressif\\\\tools\\\\python\\\\v6.0.2\\\\venv && set PATH=C:\\\\Espressif\\\\tools\\\\python\\\\v6.0.2\\\\venv\\\\Scripts;C:\\\\Espressif\\\\tools\\\\ninja\\\\1.12.1;C:\\\\Espressif\\\\tools\\\\cmake\\\\4.0.3\\\\bin;C:\\\\Users\\\\Administrator\\\\.espressif\\\\tools\\\\xtensa-esp-elf\\\\esp-15.2.0_20251204\\\\xtensa-esp-elf\\\\bin;C:\\\\Espressif\\\\tools\\\\ccache\\\\4.10.2;%PATH% && cd /d C:\\\\Users\\\\Administrator\\\\VsCodeProjects\\\\esp32 && python C:\\\\esp\\\\v6.0.2\\\\esp-idf\\\\tools\\\\idf.py build 2>&1\")",
+      "Bash(cmd.exe /c \"PATH=C:\\\\Espressif\\\\tools\\\\python\\\\v6.0.2\\\\venv\\\\Scripts;C:\\\\Espressif\\\\tools\\\\ninja\\\\1.12.1;C:\\\\Espressif\\\\tools\\\\cmake\\\\4.0.3\\\\bin;C:\\\\Users\\\\Administrator\\\\.espressif\\\\tools\\\\xtensa-esp-elf\\\\esp-15.2.0_20251204\\\\xtensa-esp-elf\\\\bin;C:\\\\Espressif\\\\tools\\\\ccache\\\\4.10.2;C:\\\\Windows\\\\system32;C:\\\\Windows && set IDF_PYTHON_ENV_PATH=C:\\\\Espressif\\\\tools\\\\python\\\\v6.0.2\\\\venv && cd /d C:\\\\Users\\\\Administrator\\\\VsCodeProjects\\\\esp32 && ninja -C build 2>&1\")",
+      "Bash(cmd.exe /c \"set PATH=C:\\\\Espressif\\\\tools\\\\python\\\\v6.0.2\\\\venv\\\\Scripts;C:\\\\Espressif\\\\tools\\\\ninja\\\\1.12.1;C:\\\\Espressif\\\\tools\\\\cmake\\\\4.0.3\\\\bin;C:\\\\Users\\\\Administrator\\\\.espressif\\\\tools\\\\xtensa-esp-elf\\\\esp-15.2.0_20251204\\\\xtensa-esp-elf\\\\bin;C:\\\\Espressif\\\\tools\\\\ccache\\\\4.10.2;C:\\\\Windows\\\\system32;C:\\\\Windows && set IDF_PYTHON_ENV_PATH=C:\\\\Espressif\\\\tools\\\\python\\\\v6.0.2\\\\venv && cd /d C:\\\\Users\\\\Administrator\\\\VsCodeProjects\\\\esp32 && python C:\\\\esp\\\\v6.0.2\\\\esp-idf\\\\tools\\\\idf.py build 2>&1 | tail -25\")",
+      "Read(//c/Users/Administrator/Tools/**)",
+      "Read(//c//**)",
+      "Read(//c/Users/Administrator/Desktop//**)"
     ]
   }
 }
