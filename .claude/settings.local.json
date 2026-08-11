@@ -1,0 +1,41 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python3 -c \"from PIL import Image; img = Image.open\\('/c/Users/Administrator/VsCodeProjects/esp32/image.jpg'\\); print\\(f'Size: {img.size}, Mode: {img.mode}'\\)\")",
+      "Bash(pip install *)",
+      "Bash(python3 -m pip install Pillow)",
+      "Bash(python3 -c \"from PIL import Image; img = Image.open\\('C:/Users/Administrator/VsCodeProjects/esp32/image.jpg'\\); print\\(f'Size: {img.size}, Mode: {img.mode}'\\)\")",
+      "Bash(python3 tools/convert_image.py image.jpg -o main/image_data.h)",
+      "Read(//c/Users/Administrator/**)",
+      "Bash(where idf.py)",
+      "Bash(python3 tools/convert_image.py image.jpg -o main)",
+      "Bash(cmd.exe /c 'set IDF_PATH=C:\\\\esp\\\\v6.0.2\\\\esp-idf && cd /d C:\\\\Users\\\\Administrator\\\\VsCodeProjects\\\\esp32 && C:\\\\Espressif\\\\tools\\\\python\\\\v6.0.2\\\\venv\\\\Scripts\\\\python.exe C:\\\\esp\\\\v6.0.2\\\\esp-idf\\\\tools\\\\idf.py build')",
+      "Bash(cmd.exe /c \"set IDF_PATH=C:\\\\esp\\\\v6.0.2\\\\esp-idf && C:\\\\Espressif\\\\tools\\\\python\\\\v6.0.2\\\\venv\\\\Scripts\\\\python.exe C:\\\\esp\\\\v6.0.2\\\\esp-idf\\\\tools\\\\idf.py build\")",
+      "Bash(cmd.exe /c \"set IDF_PATH=C:\\\\esp\\\\v6.0.2\\\\esp-idf && set IDF_PYTHON_ENV_PATH=C:\\\\Espressif\\\\tools\\\\python\\\\v6.0.2\\\\venv && set PATH=C:\\\\Espressif\\\\tools\\\\cmake\\\\4.0.3\\\\bin;C:\\\\Espressif\\\\tools\\\\ninja\\\\1.12.1;C:\\\\Espressif\\\\tools\\\\python\\\\v6.0.2\\\\venv\\\\Scripts;%PATH% && C:\\\\Espressif\\\\tools\\\\python\\\\v6.0.2\\\\venv\\\\Scripts\\\\python.exe C:\\\\esp\\\\v6.0.2\\\\esp-idf\\\\tools\\\\idf.py build\")",
+      "Bash(python3 -c *)",
+      "WebFetch(domain:components.espressif.com)",
+      "Bash(curl -sL \"https://raw.githubusercontent.com/lvandeve/lodepng/master/lodepng.h\" -o \"/c/Users/Administrator/VsCodeProjects/esp32/main/image/lodepng.h\")",
+      "Bash(curl -sL --connect-timeout 10 \"https://raw.githubusercontent.com/lvandeve/lodepng/master/lodepng.c\" -o \"/c/Users/Administrator/VsCodeProjects/esp32/main/image/lodepng.c\")",
+      "Bash(curl -sL --connect-timeout 15 \"https://raw.githubusercontent.com/lvandeve/lodepng/master/lodepng.c\" -o \"/c/Users/Administrator/VsCodeProjects/esp32/main/image/lodepng.c\")",
+      "Bash(echo \"exit=$?\")",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "Bash(curl -sL --connect-timeout 10 \"https://gitee.com/mirrors/lodepng/raw/master/lodepng.h\" -o \"/c/Users/Administrator/VsCodeProjects/esp32/main/image/lodepng.h\")",
+      "Bash(curl -sL --connect-timeout 15 \"https://gitee.com/mirrors/lodepng/raw/master/lodepng.c\" -o \"/c/Users/Administrator/VsCodeProjects/esp32/main/image/lodepng.c\")",
+      "Bash(curl -sL --connect-timeout 15 \"https://gitee.com/mirrors/lodepng/raw/master/lodepng.cpp\" -o \"/c/Users/Administrator/VsCodeProjects/esp32/main/image/lodepng.c\")",
+      "Bash(idf.py build *)",
+      "Read(//c/Espressif/**)",
+      "Bash(/c/Espressif/tools/idf-exe/1.0.1/idf.py.exe build *)",
+      "Bash(\"/c/Espressif/tools/idf-exe/1.0.3/idf.py.exe\" build *)",
+      "Bash(export IDF_PATH=\"C:/esp/v6.0.2/esp-idf\")",
+      "Read(//c/esp/v6.0.2/esp-idf/components/**)",
+      "Read(//c/esp/v6.0.2/esp-idf/components/newlib/**)",
+      "Bash(curl -sI --connect-timeout 10 \"https://aigc-output-image-1326893053.cos.ap-guangzhou.myqcloud.com/\")",
+      "Bash(openssl s_client -connect aigc-output-image-1326893053.cos.ap-guangzhou.myqcloud.com:443 -servername aigc-output-image-1326893053.cos.ap-guangzhou.myqcloud.com)",
+      "Bash(openssl x509 *)",
+      "Bash(openssl s_client -connect aigc-output-image-1326893053.cos.ap-guangzhou.myqcloud.com:443 -servername aigc-output-image-1326893053.cos.ap-guangzhou.myqcloud.com -showcerts)",
+      "Bash(awk '/^-----BEGIN CERTIFICATE-----$/{n++} n==1')",
+      "Bash(awk '/^-----BEGIN CERTIFICATE-----$/{n++} n==2')",
+      "Bash(ls -la \"/c/Users/Administrator/.espressif/\" 2>/dev/null; echo \"---\"; ls \"/c/esp/v6.0.2/esp-idf/tools/\" 2>/dev/null | head -10)"
+    ]
+  }
+}
