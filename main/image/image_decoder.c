@@ -127,7 +127,120 @@ static esp_err_t http_event_handler(esp_http_client_event_t *evt) {
 }
 
 /* ================================================================
- * Public API — Part 1: RGBA output (for text overlay)
+ * Shared decode core — PNG bytes → RGBA8 800×480
+ *
+ * Used by both the URL path (after download) and the SD path (after
+ * fread).  Caller owns the PNG buffer and frees it after this returns.
+ * ================================================================ */
+
+#define TARGET_W  800
+#define TARGET_H  480
+
+static esp_err_t png_bytes_to_rgba(const uint8_t *png, int png_len,
+                                   uint8_t **rgba_out, image_info_t *info) {
+    if (!png || png_len <= 0 || !rgba_out) return ESP_ERR_INVALID_ARG;
+    *rgba_out = NULL;
+    if (info) { info->width = 0; info->height = 0; }
+
+    unsigned png_w = 0, png_h = 0;
+    unsigned char *raw = NULL;
+
+    unsigned dec_err = lodepng_decode32(&raw, &png_w, &png_h, png, png_len);
+    if (dec_err != 0) {
+        ESP_LOGE(TAG, "PNG decode error %u: %s", dec_err, lodepng_error_text(dec_err));
+        free(raw);
+        return ESP_FAIL;
+    }
+
+    ESP_LOGI(TAG, "PNG decoded: %u×%u RGBA", png_w, png_h);
+
+    if (png_w == 0 || png_h == 0) {
+        ESP_LOGE(TAG, "PNG has zero dimension");
+        free(raw);
+        return ESP_FAIL;
+    }
+
+    if (info) { info->width = png_w; info->height = png_h; }
+
+    /* ---- Center-crop to 5:3 (800:480) aspect ---- */
+    const float target_aspect = (float)TARGET_W / (float)TARGET_H;
+    const float src_aspect    = (float)png_w / (float)png_h;
+
+    int crop_w, crop_h, crop_ox, crop_oy;
+
+    if (src_aspect > target_aspect) {
+        crop_h = (int)png_h;
+        crop_w = (int)((float)png_h * target_aspect + 0.5f);
+        crop_oy = 0;
+        crop_ox = ((int)png_w - crop_w) / 2;
+    } else {
+        crop_w = (int)png_w;
+        crop_h = (int)((float)png_w / target_aspect + 0.5f);
+        crop_ox = 0;
+        crop_oy = ((int)png_h - crop_h) / 2;
+    }
+
+    if (crop_ox < 0) crop_ox = 0;
+    if (crop_oy < 0) crop_oy = 0;
+    if (crop_ox + crop_w > (int)png_w) crop_w = (int)png_w - crop_ox;
+    if (crop_oy + crop_h > (int)png_h) crop_h = (int)png_h - crop_oy;
+
+    ESP_LOGI(TAG, "Center crop: src=%u×%u → crop=(%d,%d) %d×%d → scale → %d×%d",
+             png_w, png_h, crop_ox, crop_oy, crop_w, crop_h, TARGET_W, TARGET_H);
+
+    /* ---- Bilinear scale to 800×480 RGBA8 ---- */
+    const int out_size = TARGET_W * TARGET_H * 4;   /* 1 536 000 bytes */
+    uint8_t *out = (uint8_t *)malloc(out_size);
+    if (!out) {
+        ESP_LOGE(TAG, "OOM: RGBA8 output buffer (%d bytes)", out_size);
+        free(raw);
+        return ESP_ERR_NO_MEM;
+    }
+
+    float sx = (float)(crop_w - 1) / (float)(TARGET_W - 1);
+    float sy = (float)(crop_h - 1) / (float)(TARGET_H - 1);
+
+    for (int dy = 0; dy < TARGET_H; dy++) {
+        float fy = (float)dy * sy;
+        int   iy = (int)fy;
+        float fy_frac = fy - (float)iy;
+        if (iy >= crop_h - 1) { iy = crop_h - 2; fy_frac = 1.0f; }
+        if (iy < 0) { iy = 0; fy_frac = 0.0f; }
+
+        for (int dx = 0; dx < TARGET_W; dx++) {
+            float fx = (float)dx * sx;
+            int   ix = (int)fx;
+            float fx_frac = fx - (float)ix;
+            if (ix >= crop_w - 1) { ix = crop_w - 2; fx_frac = 1.0f; }
+            if (ix < 0) { ix = 0; fx_frac = 0.0f; }
+
+            int s0 = ((crop_oy + iy)     * (int)png_w + (crop_ox + ix))     * 4;
+            int s1 = ((crop_oy + iy)     * (int)png_w + (crop_ox + ix + 1)) * 4;
+            int s2 = ((crop_oy + iy + 1) * (int)png_w + (crop_ox + ix))     * 4;
+            int s3 = ((crop_oy + iy + 1) * (int)png_w + (crop_ox + ix + 1)) * 4;
+
+            for (int ch = 0; ch < 4; ch++) {
+                float v = (1.0f - fy_frac) * ((1.0f - fx_frac) * (float)raw[s0 + ch] + fx_frac * (float)raw[s1 + ch])
+                       +           fy_frac  * ((1.0f - fx_frac) * (float)raw[s2 + ch] + fx_frac * (float)raw[s3 + ch]);
+                int iv = (int)(v + 0.5f);
+                if (iv > 255) iv = 255;
+                if (iv < 0) iv = 0;
+                out[(dy * TARGET_W + dx) * 4 + ch] = (uint8_t)iv;
+            }
+        }
+        if ((dy & 0x07) == 0) vTaskDelay(1);
+    }
+
+    free(raw);
+
+    ESP_LOGI(TAG, "Scaled to %d×%d RGBA8 (%d bytes)", TARGET_W, TARGET_H, out_size);
+
+    *rgba_out = out;
+    return ESP_OK;
+}
+
+/* ================================================================
+ * Public API — Part 1a: URL source (download → decode)
  * ================================================================ */
 
 esp_err_t image_download_and_decode_rgba(const char *url,
@@ -241,123 +354,70 @@ esp_err_t image_download_and_decode_rgba(const char *url,
         /* If trim fails, we keep the larger buffer — still usable */
     }
 
-    ESP_LOGI(TAG, "After PNG accum: DRAM free=%lu largest=%lu  PSRAM free=%lu largest=%lu",
-             (unsigned long)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
-             (unsigned long)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL),
-             (unsigned long)heap_caps_get_free_size(MALLOC_CAP_SPIRAM),
-             (unsigned long)heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM));
+    /* ---- 2. Decode PNG with shared core ---- */
+    esp_err_t dec_ret = png_bytes_to_rgba(acc.buf, acc.len, rgba_out, info);
+    accum_free(&acc);
+    return dec_ret;
+}
 
-    /* ---- 2. Decode PNG with lodepng ---- */
+/* ================================================================
+ * Public API — Part 1b: SD/local file source (fread → decode)
+ * ================================================================ */
 
-    ESP_LOGI(TAG, "Free heap before decode: DRAM=%lu largest=%lu  PSRAM=%lu largest=%lu",
-             (unsigned long)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
-             (unsigned long)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL),
-             (unsigned long)heap_caps_get_free_size(MALLOC_CAP_SPIRAM),
-             (unsigned long)heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM));
+esp_err_t image_file_decode_rgba(const char *path,
+                                  uint8_t **rgba_out,
+                                  image_info_t *info) {
+    if (!path || !rgba_out) return ESP_ERR_INVALID_ARG;
 
-    unsigned png_w = 0, png_h = 0;
-    unsigned char *rgba = NULL;
+    *rgba_out = NULL;
+    if (info) { info->width = 0; info->height = 0; }
 
-    unsigned dec_err = lodepng_decode32(&rgba, &png_w, &png_h,
-                                         acc.buf, acc.len);
-    accum_free(&acc);   /* PNG bytes no longer needed */
+    ESP_LOGI(TAG, "Reading image file: %s", path);
 
-    if (dec_err != 0) {
-        ESP_LOGE(TAG, "PNG decode error %u: %s", dec_err, lodepng_error_text(dec_err));
-        free(rgba);
+    FILE *f = fopen(path, "rb");
+    if (!f) {
+        ESP_LOGE(TAG, "Failed to open file: %s", path);
+        return ESP_ERR_NOT_FOUND;
+    }
+
+    /* Get file size */
+    if (fseek(f, 0, SEEK_END) != 0) {
+        ESP_LOGE(TAG, "fseek failed: %s", path);
+        fclose(f);
         return ESP_FAIL;
     }
-
-    ESP_LOGI(TAG, "PNG decoded: %u×%u RGBA", png_w, png_h);
-
-    if (png_w == 0 || png_h == 0) {
-        ESP_LOGE(TAG, "PNG has zero dimension");
-        free(rgba);
+    long fsize = ftell(f);
+    if (fsize <= 0) {
+        ESP_LOGE(TAG, "File is empty: %s", path);
+        fclose(f);
         return ESP_FAIL;
     }
+    fseek(f, 0, SEEK_SET);
 
-    if (info) { info->width = png_w; info->height = png_h; }
-
-    /* ---------- 3. Center-crop + bilinear scale to 800×480 RGBA8 ---------- */
-
-    #define TARGET_W  800
-    #define TARGET_H  480
-
-    const float target_aspect = (float)TARGET_W / (float)TARGET_H;
-    const float src_aspect    = (float)png_w / (float)png_h;
-
-    int crop_w, crop_h, crop_ox, crop_oy;
-
-    if (src_aspect > target_aspect) {
-        crop_h = (int)png_h;
-        crop_w = (int)((float)png_h * target_aspect + 0.5f);
-        crop_oy = 0;
-        crop_ox = ((int)png_w - crop_w) / 2;
-    } else {
-        crop_w = (int)png_w;
-        crop_h = (int)((float)png_w / target_aspect + 0.5f);
-        crop_ox = 0;
-        crop_oy = ((int)png_h - crop_h) / 2;
-    }
-
-    if (crop_ox < 0) crop_ox = 0;
-    if (crop_oy < 0) crop_oy = 0;
-    if (crop_ox + crop_w > (int)png_w) crop_w = (int)png_w - crop_ox;
-    if (crop_oy + crop_h > (int)png_h) crop_h = (int)png_h - crop_oy;
-
-    ESP_LOGI(TAG, "Center crop: src=%u×%u → crop=(%d,%d) %d×%d → scale → %d×%d",
-             png_w, png_h, crop_ox, crop_oy, crop_w, crop_h, TARGET_W, TARGET_H);
-
-    /* allocate RGBA8 output buffer */
-    const int out_size = TARGET_W * TARGET_H * 4;   /* 1 536 000 bytes */
-    uint8_t *out = (uint8_t *)malloc(out_size);
-    if (!out) {
-        ESP_LOGE(TAG, "OOM: RGBA8 output buffer (%d bytes)", out_size);
-        free(rgba);
+    /* Read the whole file into PSRAM */
+    uint8_t *png = (uint8_t *)heap_caps_malloc((size_t)fsize, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!png) {
+        ESP_LOGE(TAG, "OOM: file buffer (%ld bytes)", fsize);
+        fclose(f);
         return ESP_ERR_NO_MEM;
     }
 
-    float sx = (float)(crop_w - 1) / (float)(TARGET_W - 1);
-    float sy = (float)(crop_h - 1) / (float)(TARGET_H - 1);
+    size_t read = fread(png, 1, (size_t)fsize, f);
+    fclose(f);
 
-    for (int dy = 0; dy < TARGET_H; dy++) {
-        float fy = (float)dy * sy;
-        int   iy = (int)fy;
-        float fy_frac = fy - (float)iy;
-        if (iy >= crop_h - 1) { iy = crop_h - 2; fy_frac = 1.0f; }
-        if (iy < 0) { iy = 0; fy_frac = 0.0f; }
-
-        for (int dx = 0; dx < TARGET_W; dx++) {
-            float fx = (float)dx * sx;
-            int   ix = (int)fx;
-            float fx_frac = fx - (float)ix;
-            if (ix >= crop_w - 1) { ix = crop_w - 2; fx_frac = 1.0f; }
-            if (ix < 0) { ix = 0; fx_frac = 0.0f; }
-
-            int s0 = ((crop_oy + iy)     * (int)png_w + (crop_ox + ix))     * 4;
-            int s1 = ((crop_oy + iy)     * (int)png_w + (crop_ox + ix + 1)) * 4;
-            int s2 = ((crop_oy + iy + 1) * (int)png_w + (crop_ox + ix))     * 4;
-            int s3 = ((crop_oy + iy + 1) * (int)png_w + (crop_ox + ix + 1)) * 4;
-
-            for (int ch = 0; ch < 4; ch++) {
-                float v = (1.0f - fy_frac) * ((1.0f - fx_frac) * (float)rgba[s0 + ch] + fx_frac * (float)rgba[s1 + ch])
-                       +           fy_frac  * ((1.0f - fx_frac) * (float)rgba[s2 + ch] + fx_frac * (float)rgba[s3 + ch]);
-                int iv = (int)(v + 0.5f);
-                if (iv > 255) iv = 255;
-                if (iv < 0) iv = 0;
-                int out_idx = (dy * TARGET_W + dx) * 4;
-                out[out_idx + ch] = (uint8_t)iv;
-            }
-        }
-        if ((dy & 0x07) == 0) vTaskDelay(1);
+    if (read != (size_t)fsize) {
+        ESP_LOGE(TAG, "Short read: %u/%ld bytes", (unsigned)read, fsize);
+        heap_caps_free(png);
+        return ESP_FAIL;
     }
 
-    free(rgba);
+    ESP_LOGI(TAG, "Read %ld bytes from %s", fsize, path);
 
-    ESP_LOGI(TAG, "Scaled to %d×%d RGBA8 (%d bytes)", TARGET_W, TARGET_H, out_size);
-
-    *rgba_out = out;
-    return ESP_OK;
+    /* Decode with shared core (this frees png's decoded copy internally,
+       but we still own `png` and must free it) */
+    esp_err_t ret = png_bytes_to_rgba(png, (int)fsize, rgba_out, info);
+    heap_caps_free(png);
+    return ret;
 }
 
 /* ================================================================

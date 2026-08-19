@@ -22,7 +22,6 @@
 #include "freertos/task.h"
 #include "esp_log.h"
 #include "esp_heap_caps.h"
-#include "esp_spiffs.h"
 
 #include "ft2build.h"
 #include FT_FREETYPE_H
@@ -97,42 +96,18 @@ static float rect_avg_luminance(const uint8_t *rgba, int img_w, int img_h,
  * Public API
  * ================================================================ */
 
-esp_err_t text_renderer_init(void) {
+esp_err_t text_renderer_init(const char *font_path) {
     if (s_initialised) return ESP_OK;
 
-    ESP_LOGI(TAG, "Initialising SPIFFS...");
-    esp_vfs_spiffs_conf_t conf = {
-        .base_path              = "/spiffs",
-        .partition_label        = "fonts",
-        .max_files              = 5,
-        .format_if_mount_failed = true,
-    };
-    esp_err_t ret = esp_vfs_spiffs_register(&conf);
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "SPIFFS mount failed: %s", esp_err_to_name(ret));
-        return ret;
-    }
+    const char *path = font_path ? font_path : TEXT_FONT_PATH_DEFAULT;
 
-    size_t total = 0, used = 0;
-    esp_spiffs_info("fonts", &total, &used);
-    ESP_LOGI(TAG, "SPIFFS mounted: %u / %u KB used", (unsigned)(used / 1024), (unsigned)(total / 1024));
-
-    /* ---- Verify font file exists in SPIFFS ---- */
+    /* ---- Verify font file exists ---- */
     struct stat st;
-    if (stat(TEXT_FONT_PATH, &st) == 0) {
-        ESP_LOGI(TAG, "Font file found: %s  size=%ld bytes", TEXT_FONT_PATH, (long)st.st_size);
+    if (stat(path, &st) == 0) {
+        ESP_LOGI(TAG, "Font file found: %s  size=%ld bytes", path, (long)st.st_size);
     } else {
-        ESP_LOGE(TAG, "Font file NOT FOUND: %s", TEXT_FONT_PATH);
-        /* Quick sanity check — try fopen just in case stat is busted */
-        FILE *fp = fopen(TEXT_FONT_PATH, "rb");
-        if (fp) {
-            fseek(fp, 0, SEEK_END);
-            ESP_LOGI(TAG, "fopen() found file! size=%ld bytes (stat was wrong)", ftell(fp));
-            fclose(fp);
-        } else {
-            ESP_LOGE(TAG, "fopen() also failed — font is absent from SPIFFS image");
-            return ESP_FAIL;
-        }
+        ESP_LOGE(TAG, "Font file NOT FOUND: %s", path);
+        return ESP_FAIL;
     }
 
     ESP_LOGI(TAG, "Initialising FreeType...");
@@ -142,10 +117,10 @@ esp_err_t text_renderer_init(void) {
         return ESP_FAIL;
     }
 
-    ESP_LOGI(TAG, "Loading font: %s (this opens from flash, not RAM)", TEXT_FONT_PATH);
-    ft_err = FT_New_Face(s_ft_library, TEXT_FONT_PATH, 0, &s_ft_face);
+    ESP_LOGI(TAG, "Loading font: %s (opens from filesystem, not RAM)", path);
+    ft_err = FT_New_Face(s_ft_library, path, 0, &s_ft_face);
     if (ft_err) {
-        ESP_LOGE(TAG, "FT_New_Face failed: %d — is font file present in SPIFFS?", ft_err);
+        ESP_LOGE(TAG, "FT_New_Face failed: %d — is font file present?", ft_err);
         FT_Done_FreeType(s_ft_library);
         s_ft_library = NULL;
         return ESP_FAIL;
@@ -163,7 +138,6 @@ esp_err_t text_renderer_init(void) {
 void text_renderer_deinit(void) {
     if (s_ft_face) { FT_Done_Face(s_ft_face); s_ft_face = NULL; }
     if (s_ft_library) { FT_Done_FreeType(s_ft_library); s_ft_library = NULL; }
-    esp_vfs_spiffs_unregister("fonts");
     s_initialised = false;
 }
 

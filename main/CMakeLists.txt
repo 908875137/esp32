@@ -16,6 +16,9 @@ set(srcs
     "input/button.c"
     # Text rendering (FreeType Chinese text overlay)
     "text/text_renderer.c"
+    # Storage (SD card + config store)
+    "storage/sd_card.c"
+    "storage/config_store.c"
     )
 
 idf_component_register(SRCS ${srcs}
@@ -39,10 +42,8 @@ idf_component_register(SRCS ${srcs}
                         esp_http_server
                         esp_http_client
                         mbedtls
-                        spiffs
                         freetype
+                        fatfs
+                        sdmmc
+                        esp_driver_sdspi
 )
-
-# SPIFFS image: embed the fonts/ directory into the "fonts" partition (10MB)
-# FreeType opens the font via /spiffs/NotoSansCJKsc-Subset.otf
-spiffs_create_partition_image(fonts ../fonts FLASH_IN_PROJECT)

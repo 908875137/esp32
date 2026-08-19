@@ -7,13 +7,10 @@
 #   0x009000 → nvs                 (24KB)
 #   0x00F000 → phy_init            (4KB)
 #   0x010000 → factory app         (4MB  — firmware + WiFi + HTTPS + PNG decoder + dither)
-#   0x410000 → font_storage        (10MB — LittleFS for NotoSansCJKsc-Subset.otf ~8MB)
-#   0xE10000 → (unused, ~2MB)
+#   (rest — unused; font now lives on the SD card, not flash)
 
 nvs,      data, nvs,     0x9000,   0x6000
 
 phy_init, data, phy,     0xf000,   0x1000
 
 factory,  app,  factory, 0x10000,  0x400000
-
-fonts,    data, spiffs,  0x410000, 0xA00000

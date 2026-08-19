@@ -26,6 +26,7 @@
 #define BUSY_PIN  (16)
 
 static spi_device_handle_t spi;
+static bool s_io_initialised = false;
 
 int ioInit() {
     // FSPI Pin definitions for ESP32-S3
@@ -35,6 +36,12 @@ int ioInit() {
     #define PIN_NUM_CS   15
 
     esp_err_t ret;
+
+    /* SPI bus + device are initialised once.  epdInit() → ioInit() runs on
+     * every refresh, but re-initialising the bus aborts. */
+    if (s_io_initialised) {
+        return 0;
+    }
 
     // SPI bus configuration
     spi_bus_config_t buscfg = {
@@ -77,6 +84,7 @@ int ioInit() {
     io_conf.pull_up_en = GPIO_PULLUP_ENABLE;
     gpio_config(&io_conf);
 
+    s_io_initialised = true;
     return 0;
 }
 

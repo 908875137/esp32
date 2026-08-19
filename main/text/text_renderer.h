@@ -3,8 +3,10 @@
  *
  * FreeType Chinese text overlay on an RGBA8 framebuffer.
  *
- * FreeType opens the OTF directly from SPIFFS → only glyph bitmaps
- * and small caches enter RAM (the 8MB file stays on flash).
+ * The font is loaded from a filesystem path (typically on the SD card,
+ * e.g. /sdcard/fonts/NotoSansSC-Regular.ttf).  FreeType opens the file
+ * by path and only glyph bitmaps enter RAM — the font file itself stays
+ * on the storage medium.
  *
  * Tweaking layout — just edit the #defines.  No magic constants in .c.
  */
@@ -14,8 +16,8 @@
 #include <stdbool.h>
 #include "esp_err.h"
 
-/* ---- font path (SPIFFS) ---- */
-#define TEXT_FONT_PATH      "/spiffs/NotoSansCJKsc-Subset.otf"
+/* Default font path (overridable at init time / via config.json) */
+#define TEXT_FONT_PATH_DEFAULT   "/sdcard/fonts/NotoSansCJKsc-Subset.otf"
 
 /* ---- layout defaults (tunable) ---- */
 #define TEXT_QUOTE_SIZE      40
@@ -36,13 +38,18 @@ extern "C" {
  * ------------------------------------------------------------------ */
 
 /*
- * Mount SPIFFS and initialise FreeType.
- * Call once at startup.  Must be called before any render function.
+ * Initialise FreeType and open `font_path` (a filesystem path, e.g. on
+ * the SD card).  Pass NULL to use TEXT_FONT_PATH_DEFAULT.
+ *
+ * The SD card must already be mounted when this is called, and must stay
+ * mounted for the lifetime of the app.
+ *
+ * Returns ESP_OK on success.
  */
-esp_err_t text_renderer_init(void);
+esp_err_t text_renderer_init(const char *font_path);
 
 /*
- * Free all FreeType resources.  SPIFFS remains mounted.
+ * Free all FreeType resources.
  */
 void text_renderer_deinit(void);
 

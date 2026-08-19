@@ -1,15 +1,17 @@
 /*
- * main.c — ThinkINK EPD Phase 3: DeepSeek + Hunyuan + text overlay
+ * main.c — ThinkINK EPD Phase 3: AI / SD dual-mode image system
  *
  * Flow:
- *   1. Init hardware (SPI I/O, EPD, button)
- *   2. Init WiFi manager + text renderer (FreeType + SPIFFS)
- *   3. Check NVS for saved WiFi credentials
- *   4. No config → SoftAP provisioning
- *   5. Has config → STA connect
- *   6. Connected → DeepSeek quote → Hunyuan image → download → decode RGBA
- *   7. Text overlay → RGB565 convert → dither → EPD display
- *   8. Button long-press → enter provisioning mode
+ *   1. Init NVS
+ *   2. Init SD card (persistent mount) + config (NVS mode + config.json)
+ *   3. Init text renderer (FreeType font from SD card)
+ *   4. Init WiFi manager + button
+ *   5. Dispatch by mode:
+ *        AI → DeepSeek quote → Hunyuan image → download → decode RGBA
+ *        SD → next PNG in /sdcard/images → decode RGBA
+ *   6. Text overlay (AI mode) → RGB565 → dither → EPD
+ *   7. Button: short = next image (SD), long = toggle AI/SD,
+ *      very-long = enter provisioning
  */
 #include <stdio.h>
 #include <stdint.h>
@@ -48,8 +50,23 @@
 #include "ai_config.h"
 #include "image_data.h"
 
+/* Storage */
+#include "sd_card.h"
+#include "config_store.h"
+
 static const char *TAG = "main";
-static bool s_text_ok = false;  /* true if text renderer initialised */
+
+/* ---- Runtime state ---- */
+static bool s_text_ok = false;            /* text renderer initialised */
+static thinkink_config_t s_cfg;
+static int s_sd_index = 0;                /* current SD image index */
+
+/* Button requests — callbacks only set these flags; the heavy work
+ * (decode/dither/WiFi/provisioning) runs in the main loop, which has a
+ * much larger stack than the 2KB button task. */
+static volatile bool s_req_next_image = false;
+static volatile bool s_req_toggle_mode = false;
+static volatile bool s_req_provisioning = false;
 
 /* ---- EPD display helpers ---- */
 
@@ -86,18 +103,30 @@ static void epd_show_rgb565(const uint8_t *rgb565) {
     free(red_buffer);
 }
 
-static void epd_show_default_image(void) {
-    epd_show_rgb565(image_bin_start);
+/* ---- Shared: RGBA framebuffer → RGB565 → dither → EPD ---- */
+
+static void display_rgba(uint8_t *rgba) {
+    uint8_t *rgb565 = NULL;
+    esp_err_t err = image_rgba_to_rgb565(rgba, 800, 480, &rgb565);
+    free(rgba);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "RGBA→RGB565 failed — skipping EPD update");
+        return;
+    }
+    ESP_LOGI(TAG, "RGB565 buffer ready (%d bytes)", 800 * 480 * 2);
+    epd_show_rgb565(rgb565);
+    free(rgb565);
 }
 
-/* Two-stage AI pipeline */
+/* ---- AI pipeline ---- */
+
 static void run_ai_pipeline(void) {
     ESP_LOGI(TAG, "========== AI Daily Art Pipeline ==========");
 
     char saved_quote[512] = {0};
     char saved_source[512] = {0};
 
-    /* ---- Stage 1: DeepSeek daily quote ---- */
+    /* Stage 1: DeepSeek daily quote */
     daily_quote_t *q = (daily_quote_t *)calloc(1, sizeof(daily_quote_t));
     if (!q) {
         ESP_LOGE(TAG, "Failed to alloc daily_quote_t");
@@ -112,28 +141,24 @@ static void run_ai_pipeline(void) {
 
     ESP_LOGI(TAG, "Daily quote: \"%s\" — %s (%s)", q->quote, q->author, q->source);
 
-    /* Copy quote + source for later text overlay (q is freed after prompt is built) */
-    strncpy(saved_quote,  q->quote,  sizeof(saved_quote) - 1);
+    strncpy(saved_quote, q->quote, sizeof(saved_quote) - 1);
     if (q->source[0]) {
         snprintf(saved_source, sizeof(saved_source), "—— %s（%s）", q->author, q->source);
     } else {
         snprintf(saved_source, sizeof(saved_source), "—— %s", q->author);
     }
 
-    /* ---- Build image prompt from quote ---- */
+    /* Stage 2: build image prompt + generate */
     char *image_prompt = (char *)malloc(AI_CHAT_RESPONSE_MAX_LEN);
     if (!image_prompt) {
-        ESP_LOGE(TAG, "Failed to alloc image prompt");
         free(q);
         return;
     }
     ai_build_image_prompt(q, image_prompt, AI_CHAT_RESPONSE_MAX_LEN);
-    free(q);  /* quote struct no longer needed */
+    free(q);
 
-    /* ---- Stage 2: Hunyuan image generation ---- */
     ai_image_result_t *img_result = (ai_image_result_t *)calloc(1, sizeof(ai_image_result_t));
     if (!img_result) {
-        ESP_LOGE(TAG, "Failed to alloc ai_image_result_t");
         free(image_prompt);
         return;
     }
@@ -147,11 +172,8 @@ static void run_ai_pipeline(void) {
     }
 
     ESP_LOGI(TAG, "Image URL: %.100s...", img_result->image_url);
-    if (img_result->revised_prompt[0]) {
-        ESP_LOGI(TAG, "Revised prompt: %.200s...", img_result->revised_prompt);
-    }
 
-    /* ---- Stage 3: Download → Decode → RGBA8 ---- */
+    /* Stage 3: download + decode to RGBA */
     uint8_t *rgba = NULL;
     image_info_t img_info;
     err = image_download_and_decode_rgba(img_result->image_url, &rgba, &img_info);
@@ -164,7 +186,7 @@ static void run_ai_pipeline(void) {
 
     ESP_LOGI(TAG, "RGBA8 framebuffer ready (%d bytes)", 800 * 480 * 4);
 
-    /* ---- Stage 4: Text overlay on RGBA framebuffer ---- */
+    /* Stage 4: text overlay */
     if (s_text_ok) {
         err = text_render_overlay(rgba, 800, 480, saved_quote, saved_source);
         if (err != ESP_OK) {
@@ -174,23 +196,77 @@ static void run_ai_pipeline(void) {
         ESP_LOGI(TAG, "Text renderer not available — showing image without text");
     }
 
-    /* ---- Stage 5: RGBA → RGB565 → Dither → EPD ---- */
-    uint8_t *rgb565 = NULL;
-    err = image_rgba_to_rgb565(rgba, 800, 480, &rgb565);
-    free(rgba);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "RGBA→RGB565 failed — skipping EPD update");
-        return;
-    }
-
-    ESP_LOGI(TAG, "RGB565 buffer ready (%d bytes)", 800 * 480 * 2);
-
-    epd_show_rgb565(rgb565);
-    free(rgb565);
+    /* Stage 5: display */
+    display_rgba(rgba);
     ESP_LOGI(TAG, "========== AI Daily Art Pipeline complete ==========");
 }
 
-/* ---- HTTP test: fetch baidu.com ---- */
+/* ---- SD pipeline ---- */
+
+static void run_sd_pipeline(void) {
+    ESP_LOGI(TAG, "========== SD Image Pipeline ==========");
+
+    if (!sd_card_is_mounted()) {
+        ESP_LOGE(TAG, "SD card not mounted — nothing to display");
+        return;
+    }
+
+    int count = sd_card_count_images();
+    if (count <= 0) {
+        ESP_LOGW(TAG, "No images found in %s", s_cfg.image_dir);
+        return;
+    }
+
+    /* Wrap the index */
+    if (s_sd_index >= count) s_sd_index = 0;
+    if (s_sd_index < 0) s_sd_index = 0;
+
+    char path[256];
+    /* Use config image_dir if set, else default */
+    const char *img_dir = s_cfg.image_dir[0] ? s_cfg.image_dir : SD_IMAGES_DIR;
+
+    /* Enumerate the n-th image path */
+    esp_err_t err = sd_card_get_image_path(s_sd_index, path, sizeof(path));
+    if (err != ESP_OK) {
+        /* Fall back to constructing the path from index if enumeration fails */
+        ESP_LOGE(TAG, "Failed to get image %d: %s", s_sd_index, esp_err_to_name(err));
+        return;
+    }
+
+    ESP_LOGI(TAG, "Loading image [%d/%d]: %s", s_sd_index + 1, count, path);
+
+    uint8_t *rgba = NULL;
+    image_info_t img_info;
+    err = image_file_decode_rgba(path, &rgba, &img_info);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to decode image: %s", path);
+        return;
+    }
+
+    ESP_LOGI(TAG, "Decoded %ux%u → 800×480 RGBA", img_info.width, img_info.height);
+
+    display_rgba(rgba);
+    ESP_LOGI(TAG, "========== SD Image Pipeline complete ==========");
+}
+
+/* ---- Button callbacks — set flags only, never run heavy work here ---- */
+
+static void on_short_press(void) {
+    s_req_next_image = true;
+    ESP_LOGI(TAG, "Short press → request next image");
+}
+
+static void on_long_press(void) {
+    s_req_toggle_mode = true;
+    ESP_LOGI(TAG, "Long press → request mode toggle");
+}
+
+static void on_very_long_press(void) {
+    s_req_provisioning = true;
+    ESP_LOGI(TAG, "Very-long press → request provisioning");
+}
+
+/* ---- HTTP connectivity test (debug) ---- */
 
 static void http_test_baidu(void) {
     ESP_LOGI(TAG, "=== HTTP test: GET http://baidu.com ===");
@@ -216,34 +292,12 @@ static void http_test_baidu(void) {
         int content_len = esp_http_client_get_content_length(client);
         ESP_LOGI(TAG, "HTTP GET baidu.com: status=%d, content_length=%d",
                  status, content_len);
-
-        char *buf = malloc(4096);
-        if (buf) {
-            int read = esp_http_client_read(client, buf, 4095);
-            if (read > 0) {
-                buf[read] = '\0';
-                ESP_LOGI(TAG, "Response body (%d bytes):\n%.500s...", read, buf);
-            }
-            free(buf);
-        }
     } else {
         ESP_LOGE(TAG, "HTTP request failed: %s", esp_err_to_name(err));
     }
 
     esp_http_client_cleanup(client);
     ESP_LOGI(TAG, "=== HTTP test done ===");
-}
-
-/* ---- Button callback ---- */
-
-static void on_button_long_press(void) {
-    ESP_LOGI(TAG, "Button long-press → entering provisioning mode");
-
-    wifi_manager_start_provisioning();
-    web_server_start();
-
-    const char *ap_ssid = wifi_manager_get_ap_ssid();
-    epd_show_provisioning_info(ap_ssid);
 }
 
 /* ---- Main app ---- */
@@ -256,18 +310,34 @@ int app_main(void) {
     }
 
     printf("\n========================================\n");
-    printf("  ThinkINK EPD — Phase 3: Daily Art\n");
+    printf("  ThinkINK EPD — Phase 3: AI/SD Dual\n");
     printf("========================================\n\n");
 
-    /* ---- 0. Init text renderer (SPIFFS + FreeType) ---- */
+    /* ---- 1. Init NVS ---- */
+    ESP_LOGI(TAG, "Initialising NVS...");
+    esp_err_t nvs_err = nvs_flash_init();
+    if (nvs_err == ESP_ERR_NVS_NO_FREE_PAGES || nvs_err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+        ESP_LOGW(TAG, "NVS truncated, erasing...");
+        nvs_flash_erase();
+        nvs_flash_init();
+    }
+
+    /* ---- 2. Init SD card (persistent mount) ---- */
+    ESP_LOGI(TAG, "Initialising SD card...");
+    sd_card_init();  /* non-fatal — SD may be absent */
+
+    /* ---- 3. Load config (NVS mode + config.json) ---- */
+    config_store_load(&s_cfg);
+
+    /* ---- 4. Init text renderer (font from SD) ---- */
     ESP_LOGI(TAG, "Initialising text renderer...");
-    if (text_renderer_init() == ESP_OK) {
+    if (text_renderer_init(s_cfg.font) == ESP_OK) {
         s_text_ok = true;
     } else {
         ESP_LOGE(TAG, "text_renderer_init failed — text overlay unavailable");
     }
 
-    /* ---- 1. Init WiFi manager ---- */
+    /* ---- 5. Init WiFi manager ---- */
     ESP_LOGI(TAG, "Initialising WiFi manager...");
     esp_err_t err = wifi_manager_init();
     if (err != ESP_OK) {
@@ -275,37 +345,42 @@ int app_main(void) {
         return 1;
     }
 
-    /* ---- 2. Init button (GPIO0, long-press = enter provisioning) ---- */
+    /* ---- 6. Init button (three levels) ---- */
     ESP_LOGI(TAG, "Initialising button (GPIO0)...");
-    button_init(0, on_button_long_press);
+    button_init(0, on_short_press, on_long_press, on_very_long_press);
 
-    /* ---- 3. WiFi decision ---- */
-    if (wifi_manager_has_config()) {
-        ESP_LOGI(TAG, "WiFi config found in NVS, connecting...");
-        err = wifi_manager_connect();
-        if (err == ESP_OK) {
-            ESP_LOGI(TAG, "WiFi connected!");
+    /* ---- 7. Initial mode dispatch ---- */
+    if (s_cfg.mode == THINKINK_MODE_SD) {
+        ESP_LOGI(TAG, "Mode: SD — displaying local image");
+        run_sd_pipeline();
+    } else {
+        ESP_LOGI(TAG, "Mode: AI — connecting WiFi then generate");
+        if (wifi_manager_has_config()) {
+            err = wifi_manager_connect();
+            if (err == ESP_OK) {
+                ESP_LOGI(TAG, "WiFi connected!");
+            } else {
+                ESP_LOGW(TAG, "WiFi connect failed (%s), starting provisioning",
+                         esp_err_to_name(err));
+                wifi_manager_start_provisioning();
+                web_server_start();
+                const char *ap_ssid = wifi_manager_get_ap_ssid();
+                epd_show_provisioning_info(ap_ssid);
+            }
         } else {
-            ESP_LOGW(TAG, "WiFi connect failed (%s), starting provisioning",
-                     esp_err_to_name(err));
+            ESP_LOGI(TAG, "No WiFi config in NVS, starting provisioning");
             wifi_manager_start_provisioning();
             web_server_start();
             const char *ap_ssid = wifi_manager_get_ap_ssid();
             epd_show_provisioning_info(ap_ssid);
         }
-    } else {
-        ESP_LOGI(TAG, "No WiFi config in NVS, starting provisioning");
-        wifi_manager_start_provisioning();
-        web_server_start();
-        const char *ap_ssid = wifi_manager_get_ap_ssid();
-        epd_show_provisioning_info(ap_ssid);
     }
 
-    /* ---- 4. Main loop ---- */
-    bool pipeline_done = false;
+    /* ---- 8. Main loop ---- */
+    bool ai_pipeline_done = false;
 
     while (1) {
-        /* Check if provisioning form was submitted */
+        /* Provisioning form submitted */
         if (web_server_provision_done()) {
             char ssid[65] = {0};
             char pass[65] = {0};
@@ -318,7 +393,6 @@ int app_main(void) {
             wifi_manager_stop_provisioning();
             web_server_stop();
 
-            ESP_LOGI(TAG, "Connecting with new credentials...");
             err = wifi_manager_connect();
             if (err == ESP_OK) {
                 ESP_LOGI(TAG, "WiFi connected after provisioning!");
@@ -328,15 +402,47 @@ int app_main(void) {
             }
         }
 
-        /* Once connected, run the AI art pipeline (once) */
-        if (wifi_manager_is_connected() && !pipeline_done) {
-            pipeline_done = true;
-            ESP_LOGI(TAG, "WiFi connected! Starting daily art pipeline...");
+        /* ---- Button: short press → next image (SD mode only) ---- */
+        if (s_req_next_image) {
+            s_req_next_image = false;
+            if (s_cfg.mode == THINKINK_MODE_SD) {
+                s_sd_index++;
+                ESP_LOGI(TAG, "Next SD image (%d)", s_sd_index);
+                run_sd_pipeline();
+            }
+        }
 
-            /* Quick HTTP test first to verify connectivity */
+        /* ---- Button: long press → toggle AI/SD mode ---- */
+        if (s_req_toggle_mode) {
+            s_req_toggle_mode = false;
+            s_cfg.mode = (s_cfg.mode == THINKINK_MODE_AI) ? THINKINK_MODE_SD : THINKINK_MODE_AI;
+            config_store_save_mode(s_cfg.mode);
+            ai_pipeline_done = false;
+            ESP_LOGI(TAG, "Mode switched to %s",
+                     s_cfg.mode == THINKINK_MODE_AI ? "AI" : "SD");
+            if (s_cfg.mode == THINKINK_MODE_SD) {
+                run_sd_pipeline();
+            } else if (wifi_manager_has_config()) {
+                wifi_manager_connect();
+            }
+        }
+
+        /* ---- Button: very-long press → enter provisioning ---- */
+        if (s_req_provisioning) {
+            s_req_provisioning = false;
+            ESP_LOGI(TAG, "Entering provisioning mode...");
+            wifi_manager_start_provisioning();
+            web_server_start();
+            const char *ap_ssid = wifi_manager_get_ap_ssid();
+            epd_show_provisioning_info(ap_ssid);
+        }
+
+        /* AI mode: once connected, run the AI pipeline (once) */
+        if (s_cfg.mode == THINKINK_MODE_AI &&
+            wifi_manager_is_connected() && !ai_pipeline_done) {
+            ai_pipeline_done = true;
+            ESP_LOGI(TAG, "WiFi connected! Starting AI pipeline...");
             http_test_baidu();
-
-            /* Then do the full two-stage AI pipeline */
             run_ai_pipeline();
         }
 
