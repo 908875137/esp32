@@ -43,7 +43,6 @@ idf_component_register(SRCS ${srcs}
                         freetype
 )
 
-# SPIFFS image: embed the font file into the "fonts" partition (10MB)
-# The font file must be at the project root: NotoSansCJKsc-Subset.otf
-# FreeType opens it via /spiffs/fonts/NotoSansCJKsc-Subset.otf
-spiffs_create_partition_image(fonts ../NotoSansCJKsc-Subset.otf FLASH_IN_PROJECT)
+# SPIFFS image: embed the fonts/ directory into the "fonts" partition (10MB)
+# FreeType opens the font via /spiffs/NotoSansCJKsc-Subset.otf
+spiffs_create_partition_image(fonts ../fonts FLASH_IN_PROJECT)

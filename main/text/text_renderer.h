@@ -1,10 +1,12 @@
 /*
  * text_renderer.h
  *
- * FreeType Chinese text overlay on RGBA framebuffer.
+ * FreeType Chinese text overlay on an RGBA8 framebuffer.
  *
- * Font is stored in SPIFFS at TEXT_FONT_PATH so FreeType reads it from
- * flash on demand — no 8MB in-memory load.
+ * FreeType opens the OTF directly from SPIFFS → only glyph bitmaps
+ * and small caches enter RAM (the 8MB file stays on flash).
+ *
+ * Tweaking layout — just edit the #defines.  No magic constants in .c.
  */
 #pragma once
 
@@ -13,16 +15,16 @@
 #include "esp_err.h"
 
 /* ---- font path (SPIFFS) ---- */
-#define TEXT_FONT_PATH      "/spiffs/fonts/NotoSansCJKsc-Subset.otf"
+#define TEXT_FONT_PATH      "/spiffs/NotoSansCJKsc-Subset.otf"
 
 /* ---- layout defaults (tunable) ---- */
-#define TEXT_QUOTE_SIZE      32
-#define TEXT_SOURCE_SIZE     18
-#define TEXT_MARGIN_X        40
-#define TEXT_BOTTOM_MARGIN   24
-#define TEXT_LINE_SPACING    8
-#define TEXT_SOURCE_GAP      10
-#define TEXT_AREA_Y_START    380
+#define TEXT_QUOTE_SIZE      40
+#define TEXT_SOURCE_SIZE     21
+#define TEXT_MARGIN_X        48
+#define TEXT_BOTTOM_MARGIN   14
+#define TEXT_LINE_SPACING    9
+#define TEXT_SOURCE_GAP      14
+#define TEXT_AREA_Y_START    300
 #define TEXT_AREA_Y_END      480
 
 #ifdef __cplusplus

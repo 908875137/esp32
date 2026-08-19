@@ -49,6 +49,7 @@
 #include "image_data.h"
 
 static const char *TAG = "main";
+static bool s_text_ok = false;  /* true if text renderer initialised */
 
 /* ---- EPD display helpers ---- */
 
@@ -93,6 +94,9 @@ static void epd_show_default_image(void) {
 static void run_ai_pipeline(void) {
     ESP_LOGI(TAG, "========== AI Daily Art Pipeline ==========");
 
+    char saved_quote[512] = {0};
+    char saved_source[512] = {0};
+
     /* ---- Stage 1: DeepSeek daily quote ---- */
     daily_quote_t *q = (daily_quote_t *)calloc(1, sizeof(daily_quote_t));
     if (!q) {
@@ -108,12 +112,12 @@ static void run_ai_pipeline(void) {
 
     ESP_LOGI(TAG, "Daily quote: \"%s\" — %s (%s)", q->quote, q->author, q->source);
 
-    /* Build source line early (while q still lives) */
-    char source_buf[512];
+    /* Copy quote + source for later text overlay (q is freed after prompt is built) */
+    strncpy(saved_quote,  q->quote,  sizeof(saved_quote) - 1);
     if (q->source[0]) {
-        snprintf(source_buf, sizeof(source_buf), "—— %s（%s）", q->author, q->source);
+        snprintf(saved_source, sizeof(saved_source), "—— %s（%s）", q->author, q->source);
     } else {
-        snprintf(source_buf, sizeof(source_buf), "—— %s", q->author);
+        snprintf(saved_source, sizeof(saved_source), "—— %s", q->author);
     }
 
     /* ---- Build image prompt from quote ---- */
@@ -124,7 +128,7 @@ static void run_ai_pipeline(void) {
         return;
     }
     ai_build_image_prompt(q, image_prompt, AI_CHAT_RESPONSE_MAX_LEN);
-    free(q);  /* quote no longer needed past this point */
+    free(q);  /* quote struct no longer needed */
 
     /* ---- Stage 2: Hunyuan image generation ---- */
     ai_image_result_t *img_result = (ai_image_result_t *)calloc(1, sizeof(ai_image_result_t));
@@ -161,9 +165,13 @@ static void run_ai_pipeline(void) {
     ESP_LOGI(TAG, "RGBA8 framebuffer ready (%d bytes)", 800 * 480 * 4);
 
     /* ---- Stage 4: Text overlay on RGBA framebuffer ---- */
-    err = text_render_overlay(rgba, 800, 480, source_buf, source_buf);
-    if (err != ESP_OK) {
-        ESP_LOGW(TAG, "Text overlay failed — showing image without text");
+    if (s_text_ok) {
+        err = text_render_overlay(rgba, 800, 480, saved_quote, saved_source);
+        if (err != ESP_OK) {
+            ESP_LOGW(TAG, "Text overlay failed — showing image without text");
+        }
+    } else {
+        ESP_LOGI(TAG, "Text renderer not available — showing image without text");
     }
 
     /* ---- Stage 5: RGBA → RGB565 → Dither → EPD ---- */
@@ -251,15 +259,15 @@ int app_main(void) {
     printf("  ThinkINK EPD — Phase 3: Daily Art\n");
     printf("========================================\n\n");
 
-    /* ---- 1. Init text renderer (SPIFFS + FreeType) ---- */
+    /* ---- 0. Init text renderer (SPIFFS + FreeType) ---- */
     ESP_LOGI(TAG, "Initialising text renderer...");
-    esp_err_t init_err = text_renderer_init();
-    if (init_err != ESP_OK) {
-        ESP_LOGE(TAG, "text_renderer_init failed: %s", esp_err_to_name(init_err));
-        /* Non-fatal — we can still display images without text */
+    if (text_renderer_init() == ESP_OK) {
+        s_text_ok = true;
+    } else {
+        ESP_LOGE(TAG, "text_renderer_init failed — text overlay unavailable");
     }
 
-    /* ---- 2. Init WiFi manager (includes NVS + netif + event loop) ---- */
+    /* ---- 1. Init WiFi manager ---- */
     ESP_LOGI(TAG, "Initialising WiFi manager...");
     esp_err_t err = wifi_manager_init();
     if (err != ESP_OK) {

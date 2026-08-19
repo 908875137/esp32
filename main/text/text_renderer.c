@@ -1,35 +1,29 @@
 /*
  * text_renderer.c
  *
- * FreeType-based Chinese text overlay.
+ * FreeType-based Chinese text overlay on an RGBA8 framebuffer.
  *
- * Font: /spiffs/fonts/NotoSansCJKsc-Subset.otf  (~8 MB on flash)
- * FreeType opens the file from SPIFFS — it does NOT load the whole OTF
- * into memory.  Only glyph bitmaps and small internal caches use RAM.
+ * Font handling — FT_New_Face(FILE_PATH) tells FreeType to open the font
+ * from SPIFFS.  FreeType then reads glyph tables on demand via fseek/fread
+ * through the SPIFFS VFS layer — the 8MB OTF is never fully loaded into RAM.
  *
- * Flow (per call):
- *   1. Sample bottom 100-rows of the RGBA framebuffer → average luminance
- *   2. Choose text colour: BLACK if bg is light, WHITE if bg is dark
- *   3. For each character in quote:
- *      a) decode UTF-8 → Unicode codepoint
- *      b) FT_Get_Char_Index + FT_Load_Glyph + FT_Render_Glyph
- *      c) accumulate X offset; wrap to next line if past margin
- *   4. Draw each glyph bitmap into the RGBA framebuffer (alpha-blend)
- *   5. Same for source line (smaller font, red tint available)
- *   6. Free glyph bitmaps
+ * Renders the quote with auto word-wrap, then the source line below it.
+ * Text colour is chosen automatically based on background luminance.
+ *
+ * Layout parameters are in text_renderer.h — change them there, not here.
  */
 
 #include <string.h>
 #include <stdlib.h>
 #include <stdio.h>
 #include <math.h>
+#include <sys/stat.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_log.h"
 #include "esp_heap_caps.h"
 #include "esp_spiffs.h"
 
-/* FreeType */
 #include "ft2build.h"
 #include FT_FREETYPE_H
 
@@ -123,6 +117,24 @@ esp_err_t text_renderer_init(void) {
     esp_spiffs_info("fonts", &total, &used);
     ESP_LOGI(TAG, "SPIFFS mounted: %u / %u KB used", (unsigned)(used / 1024), (unsigned)(total / 1024));
 
+    /* ---- Verify font file exists in SPIFFS ---- */
+    struct stat st;
+    if (stat(TEXT_FONT_PATH, &st) == 0) {
+        ESP_LOGI(TAG, "Font file found: %s  size=%ld bytes", TEXT_FONT_PATH, (long)st.st_size);
+    } else {
+        ESP_LOGE(TAG, "Font file NOT FOUND: %s", TEXT_FONT_PATH);
+        /* Quick sanity check — try fopen just in case stat is busted */
+        FILE *fp = fopen(TEXT_FONT_PATH, "rb");
+        if (fp) {
+            fseek(fp, 0, SEEK_END);
+            ESP_LOGI(TAG, "fopen() found file! size=%ld bytes (stat was wrong)", ftell(fp));
+            fclose(fp);
+        } else {
+            ESP_LOGE(TAG, "fopen() also failed — font is absent from SPIFFS image");
+            return ESP_FAIL;
+        }
+    }
+
     ESP_LOGI(TAG, "Initialising FreeType...");
     int ft_err = FT_Init_FreeType(&s_ft_library);
     if (ft_err) {
@@ -196,6 +208,7 @@ esp_err_t text_render_overlay(uint8_t *rgba, int W, int H,
     int line_count = 0;
     int cur_x = 0;
     const char *p = quote;
+    int layout_glyph_count = 0;  /* for watchdog feeding */
 
     while (*p && line_count < 16) {
         unsigned cp = utf8_codepoint(&p);
@@ -204,8 +217,12 @@ esp_err_t text_render_overlay(uint8_t *rgba, int W, int H,
         int glyph_idx = FT_Get_Char_Index(s_ft_face, cp);
         if (glyph_idx == 0) continue;  /* missing glyph — skip */
 
-        FT_Load_Glyph(s_ft_face, glyph_idx, FT_LOAD_RENDER);
+        FT_Load_Glyph(s_ft_face, glyph_idx, FT_LOAD_NO_BITMAP);
         int adv = s_ft_face->glyph->advance.x >> 6;
+
+        /* Feed watchdog every 4 glyphs (FT_Load_Glyph hits SPIFFS → flash I/O) */
+        if ((layout_glyph_count & 0x03) == 0) vTaskDelay(1);
+        layout_glyph_count++;
 
         if (cur_x + adv > W - TEXT_MARGIN_X * 2 && cur_x > 0) {
             /* wrap */
@@ -230,6 +247,7 @@ esp_err_t text_render_overlay(uint8_t *rgba, int W, int H,
     int source_line_h = (source && source[0]) ? (TEXT_SOURCE_SIZE + TEXT_SOURCE_GAP) : 0;
     int total_text_h = quote_block_h + source_line_h;
     int start_y = H - TEXT_BOTTOM_MARGIN - total_text_h;
+    if (start_y < 0) start_y = 0;  /* too much text — don't draw off-screen */
 
     ESP_LOGI(TAG, "Text block: %d×%d px at Y=%d", (int)(W - TEXT_MARGIN_X * 2), total_text_h, start_y);
 
@@ -238,6 +256,7 @@ esp_err_t text_render_overlay(uint8_t *rgba, int W, int H,
 
     int draw_y = start_y;
     int line_idx = 0;
+    int draw_glyph_count = 0;   /* for watchdog feeding */
     p = quote;
     cur_x = TEXT_MARGIN_X;
 
@@ -249,20 +268,29 @@ esp_err_t text_render_overlay(uint8_t *rgba, int W, int H,
         if (glyph_idx == 0) continue;
 
         FT_Load_Glyph(s_ft_face, glyph_idx, FT_LOAD_RENDER);
+
+        /* Feed watchdog every 4 glyphs (FT_Load_Glyph does flash I/O) */
+        if ((draw_glyph_count & 0x03) == 0) vTaskDelay(1);
+        draw_glyph_count++;
+
         FT_GlyphSlot slot = s_ft_face->glyph;
         int adv = slot->advance.x >> 6;
         int left = cur_x + slot->bitmap_left;
-        int top  = draw_y + (int)(TEXT_QUOTE_SIZE * 1.0f) - slot->bitmap_top;
+        int baseline = draw_y + (int)(TEXT_QUOTE_SIZE * 0.85f);  /* ~85% up for visual centering */
+        int top  = baseline - slot->bitmap_top;
+        if (top < 0) top = 0;  /* glyph bitmap starts above screen — clamp */
 
         /* wrap check */
         if (cur_x + adv > W - TEXT_MARGIN_X && cur_x > TEXT_MARGIN_X) {
             line_idx++;
             draw_y += TEXT_QUOTE_SIZE + TEXT_LINE_SPACING;
             cur_x = TEXT_MARGIN_X;
-            /* re-load glyph for new line */
+            /* re-load glyph for new line (need bitmap this time) */
             FT_Load_Glyph(s_ft_face, glyph_idx, FT_LOAD_RENDER);
             left = cur_x + slot->bitmap_left;
-            top  = draw_y + (int)(TEXT_QUOTE_SIZE * 1.0f) - slot->bitmap_top;
+            baseline = draw_y + (int)(TEXT_QUOTE_SIZE * 0.85f);
+            top  = baseline - slot->bitmap_top;
+            if (top < 0) top = 0;
         }
 
         /* Alpha-blend glyph onto RGBA */
@@ -318,7 +346,9 @@ esp_err_t text_render_overlay(uint8_t *rgba, int W, int H,
             FT_Load_Glyph(s_ft_face, glyph_idx, FT_LOAD_RENDER);
             FT_GlyphSlot slot = s_ft_face->glyph;
             int left = src_x + slot->bitmap_left;
-            int top  = draw_y + (int)(TEXT_SOURCE_SIZE * 1.0f) - slot->bitmap_top;
+            int baseline = draw_y + (int)(TEXT_SOURCE_SIZE * 0.85f);
+            int top  = baseline - slot->bitmap_top;
+            if (top < 0) top = 0;
 
             uint8_t sr = source_red ? 200 : text_r;
             uint8_t sg = source_red ? 30  : text_g;
