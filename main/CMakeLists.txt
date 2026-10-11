@@ -1,5 +1,7 @@
 set(srcs
     "main.c"
+    # Config (AI API keys/URLs, overridable via config.json)
+    "config/ai_config.c"
     # Input (button polling)
     "input/button.c"
     # Display (UC8179 EPD + SPI I/O + Stucki dither)

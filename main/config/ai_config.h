@@ -1,7 +1,10 @@
 /*
  * ai_config.h
  *
- * AI API configuration — ALL keys/URLs/tokens in ONE place.
+ * AI API configuration — keys/URLs/models in ONE place, overridable via
+ * /sdcard/config.json.  The *_DEFAULT macros hold the built-in fallback; the
+ * runtime char arrays are initialised to those defaults and can be overridden
+ * at startup by config_store (config.json fields of the same name).
  *
  * Tencent TokenHub provides two models under the same API Key:
  *   - deepseek-v4-pro-202606  → Chat Completions  → daily quote
@@ -9,17 +12,22 @@
  */
 #pragma once
 
+/* ---- Defaults (fallback when config.json does not override) ---- */
+#define AI_API_KEY_DEFAULT   "sk-e7PepnmYbu6iPfjNnZo2NpRgYVKcgvDVuKlUpy2eo8KxaVpR"
+#define AI_CHAT_URL_DEFAULT  "https://tokenhub.tencentmaas.com/v1/chat/completions"
+#define AI_IMAGE_URL_DEFAULT "https://tokenhub.tencentmaas.com/v1/wand/hunyuan-image/v3-generation"
+#define AI_CHAT_MODEL_DEFAULT  "deepseek-v4-pro-202606"
+#define AI_IMAGE_MODEL_DEFAULT "hy-image-v3"
+
+/* ---- Runtime values (defaults + config.json override) ---- */
+extern char ai_api_key[256];
+extern char ai_chat_url[256];
+extern char ai_image_url[256];
+extern char ai_chat_model[64];
+extern char ai_image_model[64];
+
 /* ---- Shared API auth ---- */
-#define AI_API_KEY   "sk-e7PepnmYbu6iPfjNnZo2NpRgYVKcgvDVuKlUpy2eo8KxaVpR"
 #define AI_HTTP_USER_AGENT  "ThinkINK-ESP32/1.0"
-
-/* ---- Endpoints ---- */
-#define AI_IMAGE_URL  "https://tokenhub.tencentmaas.com/v1/wand/hunyuan-image/v3-generation"
-#define AI_CHAT_URL   "https://tokenhub.tencentmaas.com/v1/chat/completions"
-
-/* ---- Model IDs ---- */
-#define AI_IMAGE_MODEL  "hy-image-v3"
-#define AI_CHAT_MODEL   "deepseek-v4-pro-202606"
 
 /* ---- HTTP client settings ---- */
 #define AI_IMAGE_TIMEOUT_MS  120000  /* image generation can be slow */

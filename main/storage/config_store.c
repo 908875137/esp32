@@ -12,6 +12,7 @@
 
 #include "config_store.h"
 #include "sd_card.h"
+#include "ai_config.h"
 
 static const char *TAG = "config";
 
@@ -171,6 +172,33 @@ static void config_json_apply(thinkink_config_t *cfg) {
     if (cJSON_IsString(wpass) && wpass->valuestring) {
         strncpy(cfg->wifi_pass, wpass->valuestring, CONFIG_WIFI_PASS_MAX_LEN - 1);
         cfg->wifi_pass[CONFIG_WIFI_PASS_MAX_LEN - 1] = '\0';
+    }
+
+    /* AI API config (overrides the built-in defaults) */
+    cJSON *aik = cJSON_GetObjectItem(root, "ai_api_key");
+    if (cJSON_IsString(aik) && aik->valuestring) {
+        strncpy(ai_api_key, aik->valuestring, sizeof(ai_api_key) - 1);
+        ai_api_key[sizeof(ai_api_key) - 1] = '\0';
+    }
+    cJSON *acu = cJSON_GetObjectItem(root, "ai_chat_url");
+    if (cJSON_IsString(acu) && acu->valuestring) {
+        strncpy(ai_chat_url, acu->valuestring, sizeof(ai_chat_url) - 1);
+        ai_chat_url[sizeof(ai_chat_url) - 1] = '\0';
+    }
+    cJSON *aiu = cJSON_GetObjectItem(root, "ai_image_url");
+    if (cJSON_IsString(aiu) && aiu->valuestring) {
+        strncpy(ai_image_url, aiu->valuestring, sizeof(ai_image_url) - 1);
+        ai_image_url[sizeof(ai_image_url) - 1] = '\0';
+    }
+    cJSON *acm = cJSON_GetObjectItem(root, "ai_chat_model");
+    if (cJSON_IsString(acm) && acm->valuestring) {
+        strncpy(ai_chat_model, acm->valuestring, sizeof(ai_chat_model) - 1);
+        ai_chat_model[sizeof(ai_chat_model) - 1] = '\0';
+    }
+    cJSON *aim = cJSON_GetObjectItem(root, "ai_image_model");
+    if (cJSON_IsString(aim) && aim->valuestring) {
+        strncpy(ai_image_model, aim->valuestring, sizeof(ai_image_model) - 1);
+        ai_image_model[sizeof(ai_image_model) - 1] = '\0';
     }
 
     cJSON_Delete(root);

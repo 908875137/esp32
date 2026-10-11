@@ -105,7 +105,7 @@ static char *http_post_json(const char *url, const char *json_body,
     if (!client) { accum_free(&acc); return NULL; }
 
     char auth_hdr[256];
-    snprintf(auth_hdr, sizeof(auth_hdr), "Bearer %s", AI_API_KEY);
+    snprintf(auth_hdr, sizeof(auth_hdr), "Bearer %s", ai_api_key);
     esp_http_client_set_header(client, "Authorization", auth_hdr);
     esp_http_client_set_header(client, "Content-Type", "application/json");
     esp_http_client_set_post_field(client, json_body, (int)strlen(json_body));
@@ -138,7 +138,7 @@ esp_err_t ai_generate_daily_quote(daily_quote_t *quote) {
 
     /* Build Chat Completions JSON body */
     cJSON *root = cJSON_CreateObject();
-    cJSON_AddStringToObject(root, "model", AI_CHAT_MODEL);
+    cJSON_AddStringToObject(root, "model", ai_chat_model);
     cJSON_AddBoolToObject(root, "stream", false);
 
     cJSON *messages = cJSON_AddArrayToObject(root, "messages");
@@ -161,7 +161,7 @@ esp_err_t ai_generate_daily_quote(daily_quote_t *quote) {
     ESP_LOGI(TAG, "DeepSeek body: %s", req_str);
 
     int status = 0;
-    char *resp = http_post_json(AI_CHAT_URL, req_str, AI_CHAT_TIMEOUT_MS, &status);
+    char *resp = http_post_json(ai_chat_url, req_str, AI_CHAT_TIMEOUT_MS, &status);
     free(req_str);
 
     if (!resp) {
@@ -267,7 +267,7 @@ esp_err_t ai_generate_image(const char *prompt, const char *size,
     ESP_LOGI(TAG, "=== Stage 2: Hunyuan image generation ===");
 
     cJSON *req_root = cJSON_CreateObject();
-    cJSON_AddStringToObject(req_root, "model", AI_IMAGE_MODEL);
+    cJSON_AddStringToObject(req_root, "model", ai_image_model);
     cJSON_AddStringToObject(req_root, "prompt", prompt);
     cJSON_AddStringToObject(req_root, "size", size);
 
@@ -280,7 +280,7 @@ esp_err_t ai_generate_image(const char *prompt, const char *size,
     ESP_LOGI(TAG, "Image body: %s", req_str);
 
     int status = 0;
-    char *resp = http_post_json(AI_IMAGE_URL, req_str, AI_IMAGE_TIMEOUT_MS, &status);
+    char *resp = http_post_json(ai_image_url, req_str, AI_IMAGE_TIMEOUT_MS, &status);
     free(req_str);
 
     if (!resp) {
