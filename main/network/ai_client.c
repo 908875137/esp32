@@ -104,7 +104,7 @@ static char *http_post_json(const char *url, const char *json_body,
     esp_http_client_handle_t client = esp_http_client_init(&cfg);
     if (!client) { accum_free(&acc); return NULL; }
 
-    char auth_hdr[256];
+    char auth_hdr[320];
     snprintf(auth_hdr, sizeof(auth_hdr), "Bearer %s", ai_api_key);
     esp_http_client_set_header(client, "Authorization", auth_hdr);
     esp_http_client_set_header(client, "Content-Type", "application/json");
