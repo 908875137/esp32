@@ -8,7 +8,7 @@
  *   mode         "ai" | "sd"
  *   image_mode   "sequential" | "random"   (reserved)
  *   image_dir    "/sdcard/images"
- *   font         "/sdcard/fonts/NotoSansSC-Regular.ttf"
+ *   font         "/sdcard/fonts/NotoSansCJKsc-Subset.otf"
  *   quote_enabled true | false              (reserved)
  *   refresh_hour 8                          (reserved)
  */
@@ -29,18 +29,23 @@ typedef enum {
 /* Font path — filled from config.json, or a sensible default */
 #define CONFIG_FONT_MAX_LEN     128
 #define CONFIG_IMAGE_DIR_MAX_LEN 128
+#define CONFIG_WIFI_SSID_MAX_LEN 33
+#define CONFIG_WIFI_PASS_MAX_LEN 65
 
 typedef struct {
     thinkink_mode_t mode;
     char image_dir[CONFIG_IMAGE_DIR_MAX_LEN];
     char font[CONFIG_FONT_MAX_LEN];
+    int  refresh_hour;      /* hour of day (0-23) for the daily wake-up */
+    char wifi_ssid[CONFIG_WIFI_SSID_MAX_LEN];   /* optional: from config.json */
+    char wifi_pass[CONFIG_WIFI_PASS_MAX_LEN];   /* optional: from config.json */
 } thinkink_config_t;
 
 /**
  * Load configuration:
  *   1. read saved mode from NVS (persists across reboots)
  *   2. if SD card is mounted, read /sdcard/config.json and override
- *      mode / image_dir / font with any fields present.
+ *      mode / image_dir / font / refresh_hour with any fields present.
  *
  * `cfg` is filled with resolved values.  Call after sd_card_init().
  */
@@ -50,6 +55,25 @@ esp_err_t config_store_load(thinkink_config_t *cfg);
  * Persist the current mode to NVS.
  */
 esp_err_t config_store_save_mode(thinkink_mode_t mode);
+
+/**
+ * Write the current mode into /sdcard/config.json (creating/updating the
+ * "mode" field, preserving other fields) so the file and NVS stay in sync.
+ */
+esp_err_t config_store_save_mode_to_file(thinkink_mode_t mode);
+
+/**
+ * Persist / load the SD image rotation index (survives sleep/reboot).
+ */
+esp_err_t config_store_save_sd_index(int index);
+int       config_store_load_sd_index(void);
+
+/**
+ * Persist / load the "last AI generation day" as a unix-day number
+ * (days since epoch).  Used to avoid generating more than once per day.
+ */
+esp_err_t config_store_save_last_gen_day(uint32_t day);
+uint32_t  config_store_load_last_gen_day(void);
 
 #ifdef __cplusplus
 }

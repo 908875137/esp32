@@ -4,7 +4,7 @@
  * FreeType Chinese text overlay on an RGBA8 framebuffer.
  *
  * The font is loaded from a filesystem path (typically on the SD card,
- * e.g. /sdcard/fonts/NotoSansSC-Regular.ttf).  FreeType opens the file
+ * e.g. /sdcard/fonts/NotoSansCJKsc-Subset.otf).  FreeType opens the file
  * by path and only glyph bitmaps enter RAM — the font file itself stays
  * on the storage medium.
  *
@@ -28,6 +28,14 @@
 #define TEXT_SOURCE_GAP      14
 #define TEXT_AREA_Y_START    300
 #define TEXT_AREA_Y_END      480
+
+/* ---- vertical side-panel layout (portrait images) ---- */
+#define TEXT_SIDE_W             110
+#define TEXT_SIDE_QUOTE_SIZE    30
+#define TEXT_SIDE_SOURCE_SIZE   18
+#define TEXT_SIDE_MARGIN        10
+#define TEXT_SIDE_LINE_SPACING  6
+#define TEXT_SIDE_SOURCE_GAP    12
 
 #ifdef __cplusplus
 extern "C" {
@@ -74,6 +82,17 @@ void text_renderer_deinit(void);
 esp_err_t text_render_overlay(uint8_t *rgba, int W, int H,
                               const char *quote,
                               const char *source);
+
+/*
+ * Render `quote` and `source` as a vertical side panel (for portrait images,
+ * which are rotated 90° to fill the landscape screen — their "bottom" edge
+ * lands on a screen side).  Text is drawn rotated 90° along the left edge,
+ * traditional vertical reading (top-to-bottom, right-to-left), with the
+ * colour chosen from the side-panel background luminance.
+ */
+esp_err_t text_render_side_overlay(uint8_t *rgba, int W, int H,
+                                   const char *quote,
+                                   const char *source);
 
 #ifdef __cplusplus
 }

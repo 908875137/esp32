@@ -25,6 +25,10 @@
 #define RESET_PIN (6)
 #define BUSY_PIN  (16)
 
+#define EPD_BUFFER_SIZE  48000                    /* 800×480/8 */
+#define SPI_CHUNK_MAX    8192                     /* keep DMA priv buffer small enough for internal RAM */
+#define EPD_SPI_FREQ_HZ  (4 * 1000 * 1000)        /* 4 MHz (matches GxEPD2) */
+
 static spi_device_handle_t spi;
 static bool s_io_initialised = false;
 
@@ -50,15 +54,15 @@ int ioInit() {
         .sclk_io_num = PIN_NUM_CLK,
         .quadwp_io_num = -1,
         .quadhd_io_num = -1,
-        .max_transfer_sz = 32, // Max transfer size
+        .max_transfer_sz = SPI_CHUNK_MAX, // ESP32-S3 DMA single-transfer cap
     };
 
     // SPI peripheral configuration
     spi_device_interface_config_t devcfg = {
-        .clock_speed_hz = 4000000,           // 4 MHz
+        .clock_speed_hz = EPD_SPI_FREQ_HZ,   // 10 MHz
         .mode = 0,                           // SPI Mode 0
         .spics_io_num = PIN_NUM_CS,          // CS pin
-        .queue_size = 3,                     // Queue size
+        .queue_size = 1,                     // Queue size
     };
 
     // FSPI initialization (SPI2_HOST for ESP32-S3)
@@ -88,18 +92,53 @@ int ioInit() {
     return 0;
 }
 
-void sendSPI(uint8_t *data, unsigned size) {
-    esp_err_t ret;
-    spi_transaction_t t;
-
-    while(size--) {
-        memset(&t, 0, sizeof(t));       // Zero out the transaction
-        t.length = 8;                   // Len is in bytes, transaction length is in bits.
-        t.tx_buffer = data++;           // Data
-        ret = spi_device_polling_transmit(spi, &t); // Transmit!
-
-        assert(ret == ESP_OK);          // Should have had no issues.
+/* Whole-buffer SPI transmit — one transaction for the entire payload. */
+static esp_err_t sendSPI(const uint8_t *data, size_t size) {
+    if (data == NULL || size == 0) {
+        return ESP_OK;
     }
+
+    spi_transaction_t t = {
+        .length = size * 8,
+        .tx_buffer = data,
+    };
+
+    return spi_device_polling_transmit(spi, &t);
+}
+
+esp_err_t epdCommand(uint8_t cmd) {
+    unsetDC();
+    esp_err_t err = sendSPI(&cmd, 1);
+    setDC();
+    return err;
+}
+
+esp_err_t epdData(const uint8_t *data, size_t len) {
+    setDC();
+    if (data == NULL || len == 0) return ESP_OK;
+
+    /* ESP32-S3 SPI DMA caps one transfer at SPI_CHUNK_MAX bytes, so chunk the
+       payload and hold CS low across chunks (GxEPD2 keeps CS low for the whole
+       bitmap). */
+    esp_err_t ret = ESP_OK;
+    spi_device_acquire_bus(spi, portMAX_DELAY);
+
+    while (len > 0) {
+        size_t chunk = (len > SPI_CHUNK_MAX) ? SPI_CHUNK_MAX : len;
+        bool last = (chunk == len);
+        spi_transaction_t t = {
+            .length = chunk * 8,
+            .tx_buffer = data,
+            .flags = last ? 0 : SPI_TRANS_CS_KEEP_ACTIVE,
+        };
+        ret = spi_device_polling_transmit(spi, &t);
+        if (ret != ESP_OK) break;
+        data += chunk;
+        len -= chunk;
+    }
+
+    spi_device_release_bus(spi);
+    return ret;
 }
 
 void setDC() {

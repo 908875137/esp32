@@ -3,13 +3,16 @@
  */
 #pragma once
 #include <stdint.h>
+#include <stddef.h>
+#include "esp_err.h"
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
 int  ioInit(void);
-void sendSPI(uint8_t *data, unsigned size);
+esp_err_t epdCommand(uint8_t cmd);
+esp_err_t epdData(const uint8_t *data, size_t len);
 void setDC(void);
 void unsetDC(void);
 void setReset(void);

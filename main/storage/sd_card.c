@@ -23,6 +23,7 @@
 #include "sdmmc_cmd.h"
 
 #include "sd_card.h"
+#include "image_library.h"
 
 static const char *TAG = "sd";
 
@@ -31,16 +32,8 @@ static const char *TAG = "sd";
 #define PIN_NUM_CLK          20
 #define PIN_NUM_CS           47
 
-#define MAX_IMAGE_FILES      256
-
 static sdmmc_card_t *s_card = NULL;
 static bool s_mounted = false;
-
-static bool has_png_ext(const char *name) {
-    size_t n = strlen(name);
-    if (n < 4) return false;
-    return strcasecmp(name + n - 4, ".png") == 0;
-}
 
 esp_err_t sd_card_init(void) {
     if (s_mounted) return ESP_OK;
@@ -96,44 +89,36 @@ bool sd_card_is_mounted(void) {
     return s_mounted;
 }
 
+/* ---- Image enumeration (bridged to the image library) ---- */
+
 int sd_card_count_images(void) {
     if (!s_mounted) return -1;
-
-    DIR *dir = opendir(SD_IMAGES_DIR);
-    if (!dir) {
-        ESP_LOGW(TAG, "No images directory: %s", SD_IMAGES_DIR);
-        return -1;
-    }
-
-    struct dirent *entry;
-    int count = 0;
-    while ((entry = readdir(dir)) != NULL) {
-        if (has_png_ext(entry->d_name)) count++;
-    }
-    closedir(dir);
-
-    ESP_LOGI(TAG, "Found %d PNG image(s) in %s", count, SD_IMAGES_DIR);
-    return count;
+    uint32_t count = 0;
+    if (image_library_count(&count) != ESP_OK) return -1;
+    return (int)count;
 }
 
 esp_err_t sd_card_get_image_path(int index, char *path_out, size_t path_len) {
     if (!s_mounted || !path_out || path_len == 0) return ESP_ERR_INVALID_ARG;
 
-    DIR *dir = opendir(SD_IMAGES_DIR);
-    if (!dir) return ESP_ERR_NOT_FOUND;
-
-    struct dirent *entry;
-    int cur = 0;
-    esp_err_t ret = ESP_ERR_NOT_FOUND;
-    while ((entry = readdir(dir)) != NULL) {
-        if (!has_png_ext(entry->d_name)) continue;
-        if (cur == index) {
-            snprintf(path_out, path_len, "%s/%s", SD_IMAGES_DIR, entry->d_name);
-            ret = ESP_OK;
-            break;
-        }
-        cur++;
+    uint32_t id = 0;
+    if (image_library_get_id_by_index((uint32_t)index, &id) != ESP_OK) {
+        return ESP_ERR_NOT_FOUND;
     }
-    closedir(dir);
-    return ret;
+    return image_library_get_path(id, path_out, path_len);
+}
+
+esp_err_t sd_card_get_image_id(int index, uint32_t *id_out) {
+    if (!s_mounted || !id_out) return ESP_ERR_INVALID_ARG;
+    return image_library_get_id_by_index((uint32_t)index, id_out);
+}
+
+/* ---- Capacity ---- */
+
+esp_err_t sd_card_get_capacity(uint64_t *total_out, uint64_t *free_out) {
+    if (!s_mounted || !s_card) return ESP_ERR_INVALID_STATE;
+
+    /* Use the official VFS API — it takes the base path and returns both
+       total and free bytes.  Much safer than hand-rolling f_getfree. */
+    return esp_vfs_fat_info(SD_MOUNT_POINT, total_out, free_out);
 }

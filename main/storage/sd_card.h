@@ -17,6 +17,7 @@
 #pragma once
 
 #include <stdbool.h>
+#include <stdint.h>
 #include "esp_err.h"
 
 #ifdef __cplusplus
@@ -39,17 +40,29 @@ esp_err_t sd_card_init(void);
 bool sd_card_is_mounted(void);
 
 /**
- * Count PNG images (*.png) in the images directory.
+ * Count image files (*.png / *.jpg / *.jpeg) in the images directory.
  * Returns -1 on error (e.g. dir missing or SD unmounted).
  */
 int sd_card_count_images(void);
 
 /**
- * Copy the full path of the n-th PNG image (0-based, ordered by name)
+ * Copy the full path of the n-th image (0-based, sorted by name)
  * into `path_out` (size `path_len`).  Returns ESP_OK on success,
  * ESP_ERR_NOT_FOUND if n is out of range.
  */
 esp_err_t sd_card_get_image_path(int index, char *path_out, size_t path_len);
+
+/**
+ * Copy the image-library id of the n-th image (0-based, ordered by id)
+ * into `id_out`.  Returns ESP_OK on success, ESP_ERR_NOT_FOUND if out of range.
+ */
+esp_err_t sd_card_get_image_id(int index, uint32_t *id_out);
+
+/**
+ * Get total and/or free capacity in bytes.  Either pointer may be NULL.
+ * Returns ESP_ERR_INVALID_STATE if SD not mounted.
+ */
+esp_err_t sd_card_get_capacity(uint64_t *total_out, uint64_t *free_out);
 
 #ifdef __cplusplus
 }

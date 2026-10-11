@@ -1,5 +1,7 @@
 set(srcs
     "main.c"
+    # Input (button polling)
+    "input/button.c"
     # Display (UC8179 EPD + SPI I/O + Stucki dither)
     "display/epd.c"
     "display/io.c"
@@ -10,15 +12,24 @@ set(srcs
     # Image decoder (HTTPS download + PNG decode + crop/scale → RGB565)
     "image/lodepng.c"
     "image/image_decoder.c"
-    # Web (provisioning HTTP server)
+    "image/image_processing.c"
+    "image/color_space.c"
+    # Web (provisioning HTTP server + admin server)
     "web/web_server.c"
-    # Input (button polling task)
-    "input/button.c"
+    "web/admin_server.c"
+    # Power (light sleep + RTC-timer/GPIO wakeup)
+    "power/sleep_manager.c"
     # Text rendering (FreeType Chinese text overlay)
     "text/text_renderer.c"
-    # Storage (SD card + config store)
+    # Storage (SD card + config store + image/quote library + daily record + log)
     "storage/sd_card.c"
     "storage/config_store.c"
+    "storage/image_library.c"
+    "storage/quote_library.c"
+    "storage/daily.c"
+    "storage/log_to_sd.c"
+    # OTA (firmware upgrade via esp_ota_ops)
+    "ota/ota_manager.c"
     )
 
 idf_component_register(SRCS ${srcs}
@@ -27,11 +38,13 @@ idf_component_register(SRCS ${srcs}
                                  "network"
                                  "web"
                                  "image"
-                                 "input"
                                  "config"
                                  "events"
                                  "storage"
                                  "text"
+                                 "power"
+                                 "input"
+                                 "ota"
                     PRIV_REQUIRES
                         esp_driver_spi
                         esp_driver_gpio
@@ -46,4 +59,6 @@ idf_component_register(SRCS ${srcs}
                         fatfs
                         sdmmc
                         esp_driver_sdspi
+                        app_update
+                        esp_app_format
 )

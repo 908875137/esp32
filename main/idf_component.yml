@@ -16,3 +16,4 @@ dependencies:
   #   public: true
   espressif/cjson: '*'
   espressif/freetype: ^2.14.2
+  espressif/mdns: ^1.0.0

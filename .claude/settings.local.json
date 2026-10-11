@@ -72,7 +72,17 @@
       "Bash(grep -rn \"SPI3_HOST\\\\|SPI2_HOST\" \"C:/esp/v6.0.2/esp-idf/components/hal/esp32s3/include/hal/spi_types.h\" 2>/dev/null | head; echo \"---\"; find \"C:/esp/v6.0.2/esp-idf/components\" -name \"spi_types.h\" -path \"*esp32s3*\" 2>/dev/null)",
       "Read(//c/esp/v6.0.2/esp-idf/examples/storage/sd_card/sdmmc/components/sd_card/**)",
       "Bash(ls \"C:/esp/v6.0.2/esp-idf/components/esp_driver_jpeg/\" 2>/dev/null; echo \"=== esp_jpeg search ===\"; find \"C:/esp/v6.0.2/esp-idf\" -maxdepth 2 -iname \"*esp_jpeg*\" 2>/dev/null; echo \"=== jpeg decoder header ===\"; find \"C:/esp/v6.0.2/esp-idf/components\" -path \"*jpeg*\" -name \"*.h\" 2>/dev/null | head -20)",
-      "Bash(echo \"exit: $?\")"
+      "Bash(echo \"exit: $?\")",
+      "Bash(xargs -I{} basename {})",
+      "Bash(xargs grep -l \"statvfs\")",
+      "Bash(find \"C:/Users/Administrator/VsCodeProjects/epaper-dithering-main\" -name \"*.rs\" 2>/dev/null | grep -iE \"color|palette|kernel|algo\" | head -20)",
+      "Bash(python3 -c ' *)",
+      "Bash(python3)",
+      "Bash(export IDF_PYTHON_ENV_PATH=\"C:/Espressif/tools/python/v6.0.2/venv\")",
+      "Bash(\"C:/Espressif/tools/cmake/4.0.3/bin/cmake.exe\" -G Ninja -DPYTHON_DEPS_CHECKED=1 -DESP_PLATFORM=1 -B \"C:/Users/Administrator/VsCodeProjects/esp32/build\" -S \"C:/Users/Administrator/VsCodeProjects/esp32\")",
+      "WebSearch",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:192.168.31.128)"
     ]
   }
 }

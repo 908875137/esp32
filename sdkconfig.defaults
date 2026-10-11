@@ -56,10 +56,13 @@ CONFIG_FREERTOS_HZ=100
 CONFIG_ESP_MAIN_TASK_STACK_SIZE=24576
 CONFIG_MAIN_TASK_STACK_SIZE=24576
 
-# ---- Partition table (custom: 4MB factory + 10MB SPIFFS for font) ----
+# ---- Partition table (custom: 4MB factory + 4MB ota_0 + 4MB ota_1) ----
 CONFIG_PARTITION_TABLE_CUSTOM=y
 CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
 CONFIG_PARTITION_TABLE_FILENAME="partitions.csv"
+
+# ---- OTA (dual-slot + bootloader rollback) ----
+CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
 
 # ---- SPIFFS (font storage) ----
 CONFIG_SPIFFS_MAX_PARTITIONS=3

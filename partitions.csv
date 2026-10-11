@@ -1,4 +1,4 @@
-# ESP32-S3 16MB Flash — Custom partition table for ThinkINK EPD
+# ESP32-S3 16MB Flash — OTA dual-slot partition table for ThinkINK EPD
 # Name,   Type, SubType, Offset,   Size
 #
 # Layout:
@@ -6,11 +6,21 @@
 #   0x008000 → partition table     (reserved,    ~4KB)
 #   0x009000 → nvs                 (24KB)
 #   0x00F000 → phy_init            (4KB)
-#   0x010000 → factory app         (4MB  — firmware + WiFi + HTTPS + PNG decoder + dither)
-#   (rest — unused; font now lives on the SD card, not flash)
+#   0x010000 → factory app         (4MB — first USB flash, never overwritten by OTA)
+#   0x410000 → ota_0               (4MB — OTA slot A)
+#   0x810000 → ota_1               (4MB — OTA slot B)
+#   0xC10000 → otadata             (8KB — OTA bookkeeping: boot partition + rollback state)
+#
+# OTA alternates between ota_0/ota_1; factory stays as the known-good rescue image.
 
 nvs,      data, nvs,     0x9000,   0x6000
 
 phy_init, data, phy,     0xf000,   0x1000
 
 factory,  app,  factory, 0x10000,  0x400000
+
+ota_0,    app,  ota_0,   0x410000, 0x400000
+
+ota_1,    app,  ota_1,   0x810000, 0x400000
+
+otadata,  data, ota,     0xC10000, 0x2000

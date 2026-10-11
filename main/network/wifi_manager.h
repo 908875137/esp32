@@ -76,9 +76,21 @@ esp_err_t wifi_manager_stop_provisioning(void);
 bool wifi_manager_is_connected(void);
 
 /**
+ * Disconnect and fully power down WiFi (stop + clear the connected bit).
+ * Call before entering light sleep to drop the WiFi current draw.
+ */
+esp_err_t wifi_manager_disconnect(void);
+
+/**
  * Get the AP SSID used during provisioning (for display).
  */
 const char *wifi_manager_get_ap_ssid(void);
+
+/**
+ * Get the current STA IP address (e.g. "192.168.1.100").
+ * Returns ESP_ERR_INVALID_STATE if not connected / no IP yet.
+ */
+esp_err_t wifi_manager_get_ip(char *ip_out, size_t ip_len);
 
 #ifdef __cplusplus
 }

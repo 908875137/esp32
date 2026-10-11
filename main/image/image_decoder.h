@@ -7,7 +7,10 @@
  *
  * Both paths share the same lodepng decode + center-crop + bilinear-resize
  * core, and both output a TARGET_W×TARGET_H RGBA8 framebuffer ready for
- * text overlay and RGB565 conversion.
+ * preprocessing, text overlay and RGB565 conversion.
+ *
+ * Portrait images (taller than wide) are rotated 90° to fill the
+ * landscape screen.
  */
 #pragma once
 
@@ -53,3 +56,11 @@ esp_err_t image_file_decode_rgba(const char *path,
 esp_err_t image_rgba_to_rgb565(const uint8_t *rgba,
                                 int W, int H,
                                 uint8_t **rgb565_out);
+
+/*
+ * Rotate an RGBA8 framebuffer 180° in place.
+ *
+ * The panel is mounted upside-down, so the whole frame (image + overlaid
+ * text) must be flipped before dithering.  In-place, no extra buffer.
+ */
+void image_rgba_rotate_180(uint8_t *rgba, int W, int H);

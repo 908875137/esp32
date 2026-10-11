@@ -2,14 +2,11 @@
  * button.c
  *
  * Three-level button polling task:
- *   - short press      (< 1.5s)  → short_cb
- *   - long press       (1.5–5s)  → long_cb
- *   - very-long press  (≥ 5s)     → very_long_cb
+ *   - short press      (< 5s)    → short_cb   (next image / regenerate)
+ *   - long press       (5–15s)   → long_cb    (toggle AI/SD mode)
+ *   - very-long press  (≥ 15s)   → very_long_cb (enter provisioning)
  *
- * The very-long threshold (5s) deliberately sits above the previous 3s
- * provisioning threshold so the provisioning flow keeps working.
- *
- * Each level fires once per press, on release.
+ * Each level fires once per press.
  */
 #include <stdio.h>
 #include "freertos/FreeRTOS.h"
@@ -20,9 +17,9 @@
 
 static const char *TAG = "button";
 
-#define POLL_PERIOD_MS        100
-#define SHORT_PRESS_TICKS     (1500 / POLL_PERIOD_MS)  /* 1.5 s */
-#define LONG_PRESS_TICKS      (5000 / POLL_PERIOD_MS)  /* 5 s */
+#define POLL_PERIOD_MS         100
+#define SHORT_PRESS_TICKS      (5000  / POLL_PERIOD_MS)  /* 5 s  — short/long boundary */
+#define VERY_LONG_PRESS_TICKS  (15000 / POLL_PERIOD_MS)  /* 15 s — long/very-long boundary */
 
 typedef struct {
     int                          pin;
@@ -36,7 +33,6 @@ static button_ctx_t s_btn = {0};
 static void button_task(void *arg) {
     button_ctx_t *ctx = (button_ctx_t *)arg;
     int press_ticks = 0;
-    bool long_fired = false;
     bool very_long_fired = false;
 
     ESP_LOGI(TAG, "Button task started, polling GPIO%d every %d ms", ctx->pin, POLL_PERIOD_MS);
@@ -45,7 +41,7 @@ static void button_task(void *arg) {
         int level = gpio_get_level(ctx->pin);
         if (level == 0) {  /* active low — pressed */
             press_ticks++;
-            if (press_ticks >= LONG_PRESS_TICKS && !very_long_fired) {
+            if (press_ticks >= VERY_LONG_PRESS_TICKS && !very_long_fired) {
                 very_long_fired = true;
                 ESP_LOGI(TAG, "Very-long press detected (%d ticks)", press_ticks);
                 if (ctx->very_long_cb) ctx->very_long_cb();
@@ -63,7 +59,6 @@ static void button_task(void *arg) {
                 }
             }
             press_ticks = 0;
-            long_fired = false;
             very_long_fired = false;
         }
         vTaskDelay(pdMS_TO_TICKS(POLL_PERIOD_MS));
@@ -91,7 +86,7 @@ esp_err_t button_init(int pin,
     BaseType_t ret = xTaskCreate(
         button_task,
         "btn_task",
-        2048,
+        8192,  /* enlarged — the log hook's fsync runs on this task's stack */
         &s_btn,
         5,   /* priority — low */
         NULL

@@ -36,6 +36,7 @@ static const char *TAG = "wifi_mgr";
 
 static EventGroupHandle_t s_wifi_evt = NULL;
 static char s_ap_ssid[32] = {0};
+static char s_sta_ip[16] = {0};
 static int  s_retry_count = 0;
 static bool s_provisioning = false;
 
@@ -178,6 +179,7 @@ static void wifi_event_handler(void *arg, esp_event_base_t base,
         }
     } else if (base == IP_EVENT && id == IP_EVENT_STA_GOT_IP) {
         ip_event_got_ip_t *ev = (ip_event_got_ip_t *)data;
+        snprintf(s_sta_ip, sizeof(s_sta_ip), IPSTR, IP2STR(&ev->ip_info.ip));
         ESP_LOGI(TAG, "STA got IP: " IPSTR, IP2STR(&ev->ip_info.ip));
         s_retry_count = 0;
         xEventGroupSetBits(s_wifi_evt, WIFI_CONNECTED_BIT);
@@ -220,6 +222,10 @@ esp_err_t wifi_manager_init(void) {
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
     ESP_ERROR_CHECK(esp_wifi_init(&cfg));
 
+    /* Reduce TX power to shrink the WiFi current spike (battery brownout
+       mitigation).  Unit is 0.25 dBm; 32 = 8 dBm.  Lower = less current. */
+    esp_wifi_set_max_tx_power(32);
+
     /* Register event handlers */
     ESP_ERROR_CHECK(esp_event_handler_instance_register(
         WIFI_EVENT, ESP_EVENT_ANY_ID, &wifi_event_handler, NULL, NULL));
@@ -247,14 +253,7 @@ esp_err_t wifi_manager_connect(void) {
         return err;
     }
 
-    /* Mask password for logging */
-    char pass_masked[65] = {0};
-    int plen = (int)strlen(pass);
-    if (plen > 0) {
-        pass_masked[0] = pass[0];
-        for (int i = 1; i < plen; i++) pass_masked[i] = '*';
-    }
-    ESP_LOGI(TAG, "Connecting to WiFi SSID=\"%s\" pass=\"%s\"...", ssid, pass_masked);
+    ESP_LOGI(TAG, "Connecting to WiFi SSID=\"%s\" pass=\"%s\"...", ssid, pass);
 
     s_retry_count = 0;
     s_provisioning = false;
@@ -265,38 +264,41 @@ esp_err_t wifi_manager_connect(void) {
     wifi_config_t cfg = {0};
     strncpy((char *)cfg.sta.ssid, ssid, sizeof(cfg.sta.ssid) - 1);
     strncpy((char *)cfg.sta.password, pass, sizeof(cfg.sta.password) - 1);
-    cfg.sta.threshold.authmode = WIFI_AUTH_WPA2_PSK;
 
-    ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &cfg));
+    /* Try auth modes in turn — WPA2 first (most common), others as fallback
+       for WPA3-only or WPA/WPA2-mixed routers. */
+    static const wifi_auth_mode_t authmodes[] = {
+        WIFI_AUTH_WPA2_PSK,
+        WIFI_AUTH_WPA2_WPA3_PSK,
+        WIFI_AUTH_WPA3_PSK,
+        WIFI_AUTH_WPA_WPA2_PSK,
+    };
 
-    /* Clear event bits */
-    xEventGroupClearBits(s_wifi_evt, WIFI_CONNECTED_BIT | WIFI_FAIL_BIT);
+    for (size_t i = 0; i < sizeof(authmodes) / sizeof(authmodes[0]); i++) {
+        cfg.sta.threshold.authmode = authmodes[i];
+        ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &cfg));
 
-    /* Start WiFi */
-    ESP_ERROR_CHECK(esp_wifi_start());
+        xEventGroupClearBits(s_wifi_evt, WIFI_CONNECTED_BIT | WIFI_FAIL_BIT);
+        s_retry_count = 0;
+        ESP_ERROR_CHECK(esp_wifi_start());
 
-    /* Wait for connection or failure */
-    EventBits_t bits = xEventGroupWaitBits(
-        s_wifi_evt,
-        WIFI_CONNECTED_BIT | WIFI_FAIL_BIT,
-        pdFALSE,        /* don't clear on exit */
-        pdFALSE,        /* wait for any bit   */
-        pdMS_TO_TICKS(WIFI_STA_CONNECT_TIMEOUT_MS));
+        EventBits_t bits = xEventGroupWaitBits(
+            s_wifi_evt,
+            WIFI_CONNECTED_BIT | WIFI_FAIL_BIT,
+            pdFALSE,        /* don't clear on exit */
+            pdFALSE,        /* wait for any bit   */
+            pdMS_TO_TICKS(WIFI_STA_CONNECT_TIMEOUT_MS));
 
-    if (bits & WIFI_CONNECTED_BIT) {
-        ESP_LOGI(TAG, "WiFi connected successfully");
-        return ESP_OK;
-    }
+        if (bits & WIFI_CONNECTED_BIT) {
+            ESP_LOGI(TAG, "WiFi connected (authmode %d)", (int)authmodes[i]);
+            return ESP_OK;
+        }
 
-    if (bits & WIFI_FAIL_BIT) {
-        ESP_LOGW(TAG, "WiFi connection failed (event fail bit)");
         esp_wifi_stop();
-        return ESP_FAIL;
+        ESP_LOGW(TAG, "authmode %d failed — trying next", (int)authmodes[i]);
     }
 
-    /* Timeout */
-    ESP_LOGW(TAG, "WiFi connection timed out after %d ms", WIFI_STA_CONNECT_TIMEOUT_MS);
-    esp_wifi_stop();
+    ESP_LOGE(TAG, "WiFi connection failed with all auth modes");
     return ESP_ERR_TIMEOUT;
 }
 
@@ -357,6 +359,27 @@ bool wifi_manager_is_connected(void) {
     return (bits & WIFI_CONNECTED_BIT) != 0;
 }
 
+esp_err_t wifi_manager_disconnect(void) {
+    ESP_LOGI(TAG, "Disconnecting and powering down WiFi");
+    esp_err_t err = esp_wifi_stop();
+    if (s_wifi_evt) {
+        xEventGroupClearBits(s_wifi_evt, WIFI_CONNECTED_BIT | WIFI_FAIL_BIT);
+    }
+    s_sta_ip[0] = '\0';
+    return err;
+}
+
 const char *wifi_manager_get_ap_ssid(void) {
     return s_ap_ssid;
+}
+
+esp_err_t wifi_manager_get_ip(char *ip_out, size_t ip_len) {
+    if (!ip_out || ip_len == 0) return ESP_ERR_INVALID_ARG;
+    if (s_sta_ip[0] == '\0') {
+        ip_out[0] = '\0';
+        return ESP_ERR_INVALID_STATE;
+    }
+    strncpy(ip_out, s_sta_ip, ip_len - 1);
+    ip_out[ip_len - 1] = '\0';
+    return ESP_OK;
 }

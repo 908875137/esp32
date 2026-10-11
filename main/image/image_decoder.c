@@ -142,17 +142,43 @@ static esp_err_t png_bytes_to_rgba(const uint8_t *png, int png_len,
     *rgba_out = NULL;
     if (info) { info->width = 0; info->height = 0; }
 
-    unsigned png_w = 0, png_h = 0;
+    /* ---- Read PNG width/height directly from the IHDR chunk (no allocation,
+       no state object).  PNG layout is fixed: bytes 16..19 = width,
+       20..23 = height, big-endian. ---- */
+    if (png_len < 24) {
+        ESP_LOGE(TAG, "PNG too short (%d bytes)", png_len);
+        return ESP_FAIL;
+    }
+    unsigned png_w = ((unsigned)png[16] << 24) | ((unsigned)png[17] << 16) |
+                     ((unsigned)png[18] << 8)  |  (unsigned)png[19];
+    unsigned png_h = ((unsigned)png[20] << 24) | ((unsigned)png[21] << 16) |
+                     ((unsigned)png[22] << 8)  |  (unsigned)png[23];
+
+    /* Decoded RGB = w*h*3.  lodepng decodes the whole frame at once, so peak
+       PSRAM = my PNG buffer + lodepng's idat copy + inflate scanlines + RGB
+       output ≈ 7×pixels + PNG-size.  On the 8MB PSRAM (of which ~4MB is held
+       by WiFi/mDNS/httpd/SD and ~2MB is the largest contiguous block), ~470k
+       px decodes but ~850k px OOMs.  Cap at 500k px (~800×625) — already well
+       above the 800×480 (384k px) screen, so extra pixels add nothing. */
+    const unsigned long long pixels = (unsigned long long)png_w * png_h;
+    if (pixels > 500000ULL) {
+        ESP_LOGE(TAG, "Image too large: %u×%u (%llu px) — max ~800×625. "
+                 "Resize to 5:3 (e.g. 1000×600 downsampled to ≤800×625).",
+                 png_w, png_h, pixels);
+        return ESP_ERR_NO_MEM;
+    }
+
     unsigned char *raw = NULL;
 
-    unsigned dec_err = lodepng_decode32(&raw, &png_w, &png_h, png, png_len);
+    /* Decode to RGB24 (3 bytes/px) — alpha is not used downstream */
+    unsigned dec_err = lodepng_decode24(&raw, &png_w, &png_h, png, png_len);
     if (dec_err != 0) {
         ESP_LOGE(TAG, "PNG decode error %u: %s", dec_err, lodepng_error_text(dec_err));
         free(raw);
         return ESP_FAIL;
     }
 
-    ESP_LOGI(TAG, "PNG decoded: %u×%u RGBA", png_w, png_h);
+    ESP_LOGI(TAG, "PNG decoded: %u×%u RGB", png_w, png_h);
 
     if (png_w == 0 || png_h == 0) {
         ESP_LOGE(TAG, "PNG has zero dimension");
@@ -162,31 +188,45 @@ static esp_err_t png_bytes_to_rgba(const uint8_t *png, int png_len,
 
     if (info) { info->width = png_w; info->height = png_h; }
 
-    /* ---- Center-crop to 5:3 (800:480) aspect ---- */
+    /* ---- Rotation classification ----
+     *   portrait (h > w) → rotate 90° CCW to fill the landscape screen
+     *   landscape/square → no rotation here (the whole frame, text included,
+     *     is rotated 180° at display time to compensate for the upside-down
+     *     panel mounting)
+     * Rotation is a coordinate transform in the sampling loop (no extra buffer). */
+    bool rotate90  = png_h > png_w;
+    bool rotate180 = false;
+    if (rotate90)  ESP_LOGI(TAG, "Portrait (%u×%u) — rotating 90° CCW", png_w, png_h);
+
+    /* ---- Crop to 5:3 (800:480) aspect, FILL (no letterbox) ---- */
     const float target_aspect = (float)TARGET_W / (float)TARGET_H;
-    const float src_aspect    = (float)png_w / (float)png_h;
+    /* Effective source dims after rotation */
+    int src_w = rotate90 ? (int)png_h : (int)png_w;
+    int src_h = rotate90 ? (int)png_w : (int)png_h;
+    const float src_aspect = (float)src_w / (float)src_h;
 
     int crop_w, crop_h, crop_ox, crop_oy;
 
     if (src_aspect > target_aspect) {
-        crop_h = (int)png_h;
-        crop_w = (int)((float)png_h * target_aspect + 0.5f);
+        crop_h = src_h;
+        crop_w = (int)((float)src_h * target_aspect + 0.5f);
         crop_oy = 0;
-        crop_ox = ((int)png_w - crop_w) / 2;
+        crop_ox = (src_w - crop_w) / 2;
     } else {
-        crop_w = (int)png_w;
-        crop_h = (int)((float)png_w / target_aspect + 0.5f);
+        crop_w = src_w;
+        crop_h = (int)((float)src_w / target_aspect + 0.5f);
         crop_ox = 0;
-        crop_oy = ((int)png_h - crop_h) / 2;
+        crop_oy = (src_h - crop_h) / 2;
     }
 
     if (crop_ox < 0) crop_ox = 0;
     if (crop_oy < 0) crop_oy = 0;
-    if (crop_ox + crop_w > (int)png_w) crop_w = (int)png_w - crop_ox;
-    if (crop_oy + crop_h > (int)png_h) crop_h = (int)png_h - crop_oy;
+    if (crop_ox + crop_w > src_w) crop_w = src_w - crop_ox;
+    if (crop_oy + crop_h > src_h) crop_h = src_h - crop_oy;
 
-    ESP_LOGI(TAG, "Center crop: src=%u×%u → crop=(%d,%d) %d×%d → scale → %d×%d",
-             png_w, png_h, crop_ox, crop_oy, crop_w, crop_h, TARGET_W, TARGET_H);
+    ESP_LOGI(TAG, "Crop: src=%ux%u%s → (%d,%d) %d×%d → %d×%d",
+             png_w, png_h, rotate90 ? " (rot90ccw)" : rotate180 ? " (rot180)" : "",
+             crop_ox, crop_oy, crop_w, crop_h, TARGET_W, TARGET_H);
 
     /* ---- Bilinear scale to 800×480 RGBA8 ---- */
     const int out_size = TARGET_W * TARGET_H * 4;   /* 1 536 000 bytes */
@@ -201,32 +241,52 @@ static esp_err_t png_bytes_to_rgba(const uint8_t *png, int png_len,
     float sy = (float)(crop_h - 1) / (float)(TARGET_H - 1);
 
     for (int dy = 0; dy < TARGET_H; dy++) {
-        float fy = (float)dy * sy;
-        int   iy = (int)fy;
-        float fy_frac = fy - (float)iy;
-        if (iy >= crop_h - 1) { iy = crop_h - 2; fy_frac = 1.0f; }
-        if (iy < 0) { iy = 0; fy_frac = 0.0f; }
+        float sy_val = (float)crop_oy + (float)dy * sy;
 
         for (int dx = 0; dx < TARGET_W; dx++) {
-            float fx = (float)dx * sx;
-            int   ix = (int)fx;
-            float fx_frac = fx - (float)ix;
-            if (ix >= crop_w - 1) { ix = crop_w - 2; fx_frac = 1.0f; }
-            if (ix < 0) { ix = 0; fx_frac = 0.0f; }
+            float sx_val = (float)crop_ox + (float)dx * sx;
 
-            int s0 = ((crop_oy + iy)     * (int)png_w + (crop_ox + ix))     * 4;
-            int s1 = ((crop_oy + iy)     * (int)png_w + (crop_ox + ix + 1)) * 4;
-            int s2 = ((crop_oy + iy + 1) * (int)png_w + (crop_ox + ix))     * 4;
-            int s3 = ((crop_oy + iy + 1) * (int)png_w + (crop_ox + ix + 1)) * 4;
+            /* Map crop-space (sx_val, sy_val) → source float coords (ox, oy) */
+            float ox, oy;
+            if (rotate90) {
+                /* 90° CCW: (rx,ry) → (x,y) = (png_w-1-ry, rx) */
+                ox = (float)png_w - 1.0f - sy_val;
+                oy = sx_val;
+            } else if (rotate180) {
+                /* 180°: (rx,ry) → (x,y) = (png_w-1-rx, png_h-1-ry) */
+                ox = (float)png_w - 1.0f - sx_val;
+                oy = (float)png_h - 1.0f - sy_val;
+            } else {
+                ox = sx_val;
+                oy = sy_val;
+            }
 
-            for (int ch = 0; ch < 4; ch++) {
-                float v = (1.0f - fy_frac) * ((1.0f - fx_frac) * (float)raw[s0 + ch] + fx_frac * (float)raw[s1 + ch])
-                       +           fy_frac  * ((1.0f - fx_frac) * (float)raw[s2 + ch] + fx_frac * (float)raw[s3 + ch]);
+            int ix = (int)ox;
+            int iy = (int)oy;
+            float fx = ox - (float)ix;
+            float fy = oy - (float)iy;
+
+            /* Clamp to valid bilinear neighbourhood */
+            if (ix < 0)               { ix = 0; fx = 0.0f; }
+            if (ix >= (int)png_w - 1) { ix = (int)png_w - 2; fx = 1.0f; }
+            if (iy < 0)               { iy = 0; fy = 0.0f; }
+            if (iy >= (int)png_h - 1) { iy = (int)png_h - 2; fy = 1.0f; }
+
+            int s0 = (iy * (int)png_w + ix) * 3;
+            int s1 = (iy * (int)png_w + ix + 1) * 3;
+            int s2 = ((iy + 1) * (int)png_w + ix) * 3;
+            int s3 = ((iy + 1) * (int)png_w + ix + 1) * 3;
+
+            for (int ch = 0; ch < 3; ch++) {
+                float v = (1.0f - fy) * ((1.0f - fx) * (float)raw[s0 + ch] + fx * (float)raw[s1 + ch])
+                       +           fy  * ((1.0f - fx) * (float)raw[s2 + ch] + fx * (float)raw[s3 + ch]);
                 int iv = (int)(v + 0.5f);
                 if (iv > 255) iv = 255;
                 if (iv < 0) iv = 0;
                 out[(dy * TARGET_W + dx) * 4 + ch] = (uint8_t)iv;
             }
+            /* Alpha always opaque */
+            out[(dy * TARGET_W + dx) * 4 + 3] = 255;
         }
         if ((dy & 0x07) == 0) vTaskDelay(1);
     }
@@ -423,6 +483,21 @@ esp_err_t image_file_decode_rgba(const char *path,
 /* ================================================================
  * Public API — Part 2: RGBA → RGB565 conversion
  * ================================================================ */
+
+void image_rgba_rotate_180(uint8_t *rgba, int W, int H) {
+    if (!rgba || W <= 0 || H <= 0) return;
+
+    const int total = W * H;
+    /* Swap pixels symmetric about the centre (in-place).  Each pixel is 4 bytes. */
+    for (int i = 0; i < total / 2; i++) {
+        int j = total - 1 - i;
+        uint8_t tmp[4];
+        memcpy(tmp,          rgba + i * 4, 4);
+        memcpy(rgba + i * 4, rgba + j * 4, 4);
+        memcpy(rgba + j * 4, tmp,          4);
+    }
+    ESP_LOGI(TAG, "Rotated frame 180° (%d×%d)", W, H);
+}
 
 esp_err_t image_rgba_to_rgb565(const uint8_t *rgba,
                                 int W, int H,

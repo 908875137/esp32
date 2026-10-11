@@ -27,6 +27,7 @@
 #include FT_FREETYPE_H
 
 #include "text_renderer.h"
+#include "color_space.h"
 
 static const char *TAG = "text";
 
@@ -34,14 +35,107 @@ static FT_Library  s_ft_library = NULL;
 static FT_Face     s_ft_face    = NULL;
 static bool        s_initialised = false;
 
+/* ---- Text colour decision ---- */
+typedef enum { TEXT_BLACK = 0, TEXT_WHITE = 1 } text_color_t;
+
+/* ------------------------------------------------------------------
+ * choose_text_color
+ *
+ * Sample the background region that ONE GLYPH will occupy (BEFORE it is
+ * drawn, so the region holds background only), convert every pixel to
+ * OKLab, take the MEDIAN of L via a 256-bin histogram (median, not mean —
+ * a bright sky or dark tree in the region won't skew the decision), then
+ * pick BLACK or WHITE:
+ *
+ *   median L > 0.50          → BLACK   (light background)
+ *   median L < 0.35          → WHITE   (dark background)
+ *   0.35 ≤ median L ≤ 0.50   → pick the colour whose OKLab distance from
+ *                               the background is LARGER (max contrast)
+ *
+ * OKLab L is 0..1; 0.5 and 0.35 map to CIELAB L* of 50 and 35.
+ *
+ * Histogram median, not malloc+qsort — this runs PER GLYPH, so it must be
+ * allocation-free and cheap (a glyph region is only ~40×40 px).
+ * ------------------------------------------------------------------ */
+static text_color_t choose_text_color(const uint8_t *rgba, int W, int H,
+                                      int x0, int y0, int x1, int y1,
+                                      float *out_med_l,
+                                      float *out_dist_black,
+                                      float *out_dist_white) {
+    /* Clamp region to framebuffer */
+    if (x0 < 0) x0 = 0;
+    if (y0 < 0) y0 = 0;
+    if (x1 > W) x1 = W;
+    if (y1 > H) y1 = H;
+    int rw = x1 - x0;
+    int rh = y1 - y0;
+    if (rw <= 0 || rh <= 0) {
+        *out_med_l = 0.5f;
+        *out_dist_black = 0.0f;
+        *out_dist_white = 0.0f;
+        return TEXT_BLACK;
+    }
+
+    color_space_build_lut();
+
+    /* 256-bin histogram of OKLab L.  a/b are averaged (they cancel in the
+       black-vs-white distance, so a mean is fine; only L needs the median). */
+    int hist[256] = {0};
+    float sum_a = 0.0f, sum_b = 0.0f;
+    int n = 0;
+
+    for (int y = y0; y < y1; y++) {
+        const uint8_t *row = rgba + (y * W + x0) * 4;
+        for (int x = 0; x < rw; x++) {
+            float lr = color_space_lut_value(row[x * 4 + 0]);
+            float lg = color_space_lut_value(row[x * 4 + 1]);
+            float lb = color_space_lut_value(row[x * 4 + 2]);
+            oklab_t lab = rgb_linear_to_oklab(lr, lg, lb);
+            int bin = (int)(lab.l * 256.0f);
+            if (bin < 0) bin = 0;
+            if (bin > 255) bin = 255;
+            hist[bin]++;
+            sum_a += lab.a;
+            sum_b += lab.b;
+            n++;
+        }
+    }
+
+    /* Find median L from the histogram */
+    int half = n / 2;
+    int cum = 0, med_bin = 0;
+    for (int i = 0; i < 256; i++) {
+        cum += hist[i];
+        if (cum >= half) { med_bin = i; break; }
+    }
+    float med_l = (float)med_bin / 255.0f;
+    float med_a = sum_a / (float)n;
+    float med_b = sum_b / (float)n;
+
+    /* Text colours are pure black (0,0,0) → OKLab (0,0,0) and pure white
+       (255,255,255) → OKLab (1,0,0).  Distance is plain OKLab Euclidean.
+       (The a/b terms cancel for black-vs-white, so this is governed by L,
+       but we compute both for the log.) */
+    float dblack = sqrtf(med_l * med_l + med_a * med_a + med_b * med_b);
+    float dwhite = sqrtf((med_l - 1.0f) * (med_l - 1.0f) + med_a * med_a + med_b * med_b);
+
+    *out_med_l = med_l;
+    *out_dist_black = dblack;
+    *out_dist_white = dwhite;
+
+    if (med_l > 0.50f) return TEXT_BLACK;
+    if (med_l < 0.35f) return TEXT_WHITE;
+    /* Mid-tone: pick the colour with the LARGER distance = more contrast */
+    return (dblack > dwhite) ? TEXT_BLACK : TEXT_WHITE;
+}
+
 /* ---- UTF-8 decode helper ---- */
 
 /*
  * Read one UTF-8 codepoint from `*s` and advance `*s`.
  * Returns the Unicode codepoint, or 0 on error/end.
  */
-static unsigned utf8_codepoint(const char **s) {
-    const unsigned char *p = (const unsigned char *)*s;
+static unsigned utf8_codepoint(const char **s) {    const unsigned char *p = (const unsigned char *)*s;
     unsigned cp;
 
     if (*p == 0) return 0;
@@ -68,30 +162,6 @@ static unsigned utf8_codepoint(const char **s) {
     return cp;
 }
 
-/* ---- Average luminance of a region ---- */
-
-static float rect_avg_luminance(const uint8_t *rgba, int img_w, int img_h,
-                                int x0, int y0, int rw, int rh) {
-    if (x0 < 0) x0 = 0;
-    if (y0 < 0) y0 = 0;
-    if (x0 + rw > img_w) rw = img_w - x0;
-    if (y0 + rh > img_h) rh = img_h - y0;
-    if (rw <= 0 || rh <= 0) return 128.0f;
-
-    float sum = 0.0f;
-    int count = rw * rh;
-    for (int y = y0; y < y0 + rh; y++) {
-        const uint8_t *row = rgba + (y * img_w + x0) * 4;
-        for (int x = 0; x < rw; x++) {
-            float r = (float)row[x * 4 + 0];
-            float g = (float)row[x * 4 + 1];
-            float b = (float)row[x * 4 + 2];
-            sum += 0.299f * r + 0.587f * g + 0.114f * b;
-        }
-    }
-    return sum / (float)count;
-}
-
 /* ================================================================
  * Public API
  * ================================================================ */
@@ -101,14 +171,18 @@ esp_err_t text_renderer_init(const char *font_path) {
 
     const char *path = font_path ? font_path : TEXT_FONT_PATH_DEFAULT;
 
-    /* ---- Verify font file exists ---- */
+    /* ---- Verify font file exists; fall back to the default name if the
+       configured path is missing (e.g. stale config.json) ---- */
     struct stat st;
-    if (stat(path, &st) == 0) {
-        ESP_LOGI(TAG, "Font file found: %s  size=%ld bytes", path, (long)st.st_size);
-    } else {
-        ESP_LOGE(TAG, "Font file NOT FOUND: %s", path);
-        return ESP_FAIL;
+    if (stat(path, &st) != 0) {
+        ESP_LOGW(TAG, "Font file NOT FOUND: %s — trying default", path);
+        path = TEXT_FONT_PATH_DEFAULT;
+        if (stat(path, &st) != 0) {
+            ESP_LOGE(TAG, "Default font also NOT FOUND: %s", path);
+            return ESP_FAIL;
+        }
     }
+    ESP_LOGI(TAG, "Font file found: %s  size=%ld bytes", path, (long)st.st_size);
 
     ESP_LOGI(TAG, "Initialising FreeType...");
     int ft_err = FT_Init_FreeType(&s_ft_library);
@@ -151,24 +225,7 @@ esp_err_t text_render_overlay(uint8_t *rgba, int W, int H,
     if (source && source[0])
         ESP_LOGI(TAG, "Source: %s", source);
 
-    /* ---- 1. Detect background luminance in bottom area ---- */
-    float bottom_lum = rect_avg_luminance(rgba, W, H,
-                                          TEXT_MARGIN_X, TEXT_AREA_Y_START,
-                                          W - TEXT_MARGIN_X * 2, TEXT_AREA_Y_END - TEXT_AREA_Y_START);
-    ESP_LOGI(TAG, "Bottom-area luminance: %.1f", bottom_lum);
-
-    bool use_black = (bottom_lum >= 128.0f);   /* light bg → black text */
-    uint8_t text_r = use_black ? 0 : 255;
-    uint8_t text_g = use_black ? 0 : 255;
-    uint8_t text_b = use_black ? 0 : 255;
-
-    /* source line gets red tint if background is medium-light */
-    bool source_red = (bottom_lum >= 110.0f && bottom_lum <= 220.0f);
-
-    ESP_LOGI(TAG, "Text colour: %s", use_black ? "BLACK" : "WHITE");
-    if (source_red) ESP_LOGI(TAG, "Source colour: RED");
-
-    /* ---- 2. Memory log before rendering ---- */
+    /* ---- 1. Memory log before rendering ---- */
     ESP_LOGI(TAG, "DRAM free=%lu largest=%lu  PSRAM free=%lu largest=%lu",
              (unsigned long)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
              (unsigned long)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL),
@@ -225,7 +282,9 @@ esp_err_t text_render_overlay(uint8_t *rgba, int W, int H,
 
     ESP_LOGI(TAG, "Text block: %d×%d px at Y=%d", (int)(W - TEXT_MARGIN_X * 2), total_text_h, start_y);
 
-    /* ---- 5. Draw each line of the quote ---- */
+    /* ---- 5. Draw each glyph, sampling ITS OWN background just before it is
+       drawn.  A glyph that lands on a light patch gets BLACK; a neighbour on
+       a dark patch gets WHITE. ---- */
     FT_Set_Pixel_Sizes(s_ft_face, TEXT_QUOTE_SIZE, TEXT_QUOTE_SIZE);
 
     int draw_y = start_y;
@@ -267,6 +326,15 @@ esp_err_t text_render_overlay(uint8_t *rgba, int W, int H,
             if (top < 0) top = 0;
         }
 
+        /* Sample THIS glyph's footprint and pick its colour */
+        float med_l = 0.5f, dblack = 0.0f, dwhite = 0.0f;
+        text_color_t tcol = choose_text_color(
+            rgba, W, H,
+            left, top,
+            left + (int)slot->bitmap.width, top + (int)slot->bitmap.rows,
+            &med_l, &dblack, &dwhite);
+        uint8_t tr = (tcol == TEXT_BLACK) ? 0 : 255;
+
         /* Alpha-blend glyph onto RGBA */
         for (int gy = 0; gy < (int)slot->bitmap.rows; gy++) {
             int screen_y = top + gy;
@@ -278,9 +346,9 @@ esp_err_t text_render_overlay(uint8_t *rgba, int W, int H,
                 if (alpha == 0) continue;
                 int idx = (screen_y * W + screen_x) * 4;
                 float a = (float)alpha / 255.0f;
-                rgba[idx + 0] = (uint8_t)((float)rgba[idx + 0] * (1.0f - a) + (float)text_r * a + 0.5f);
-                rgba[idx + 1] = (uint8_t)((float)rgba[idx + 1] * (1.0f - a) + (float)text_g * a + 0.5f);
-                rgba[idx + 2] = (uint8_t)((float)rgba[idx + 2] * (1.0f - a) + (float)text_b * a + 0.5f);
+                rgba[idx + 0] = (uint8_t)((float)rgba[idx + 0] * (1.0f - a) + (float)tr * a + 0.5f);
+                rgba[idx + 1] = (uint8_t)((float)rgba[idx + 1] * (1.0f - a) + (float)tr * a + 0.5f);
+                rgba[idx + 2] = (uint8_t)((float)rgba[idx + 2] * (1.0f - a) + (float)tr * a + 0.5f);
                 rgba[idx + 3] = 255;
             }
         }
@@ -324,9 +392,14 @@ esp_err_t text_render_overlay(uint8_t *rgba, int W, int H,
             int top  = baseline - slot->bitmap_top;
             if (top < 0) top = 0;
 
-            uint8_t sr = source_red ? 200 : text_r;
-            uint8_t sg = source_red ? 30  : text_g;
-            uint8_t sb = source_red ? 30  : text_b;
+            /* Per-glyph colour for the source line too */
+            float med_l = 0.5f, dblack = 0.0f, dwhite = 0.0f;
+            text_color_t stcol = choose_text_color(
+                rgba, W, H,
+                left, top,
+                left + (int)slot->bitmap.width, top + (int)slot->bitmap.rows,
+                &med_l, &dblack, &dwhite);
+            uint8_t sr = (stcol == TEXT_BLACK) ? 0 : 255;
 
             for (int gy = 0; gy < (int)slot->bitmap.rows; gy++) {
                 int screen_y = top + gy;
@@ -339,8 +412,8 @@ esp_err_t text_render_overlay(uint8_t *rgba, int W, int H,
                     int idx = (screen_y * W + screen_x) * 4;
                     float a = (float)alpha / 255.0f;
                     rgba[idx + 0] = (uint8_t)((float)rgba[idx + 0] * (1.0f - a) + (float)sr * a + 0.5f);
-                    rgba[idx + 1] = (uint8_t)((float)rgba[idx + 1] * (1.0f - a) + (float)sg * a + 0.5f);
-                    rgba[idx + 2] = (uint8_t)((float)rgba[idx + 2] * (1.0f - a) + (float)sb * a + 0.5f);
+                    rgba[idx + 1] = (uint8_t)((float)rgba[idx + 1] * (1.0f - a) + (float)sr * a + 0.5f);
+                    rgba[idx + 2] = (uint8_t)((float)rgba[idx + 2] * (1.0f - a) + (float)sr * a + 0.5f);
                     rgba[idx + 3] = 255;
                 }
             }
@@ -356,5 +429,193 @@ esp_err_t text_render_overlay(uint8_t *rgba, int W, int H,
              (unsigned long)heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM));
 
     ESP_LOGI(TAG, "Text overlay complete");
+    return ESP_OK;
+}
+
+/* ================================================================
+ * Side overlay (portrait images) — vertical text along the right edge.
+ *
+ * A portrait image is rotated 90° to fill the landscape panel, so its
+ * "bottom" edge lands on a screen side.  We render the quote horizontally
+ * into a small alpha buffer, then rotate it 90° onto the right edge:
+ * traditional vertical reading (each line runs top-to-bottom, and lines run
+ * right-to-left).  The text colour is picked once from the side-panel
+ * background luminance (not per glyph — the panel is narrow).
+ * ================================================================ */
+esp_err_t text_render_side_overlay(uint8_t *rgba, int W, int H,
+                                   const char *quote, const char *source) {
+    if (!s_initialised || !rgba || !quote) return ESP_ERR_INVALID_STATE;
+
+    ESP_LOGI(TAG, "--- Side overlay (portrait) ---");
+
+    const int wrap_w = H - TEXT_SIDE_MARGIN * 2;   /* text runs along the tall side */
+
+    /* ---- 1. measure + wrap (quote) ---- */
+    FT_Set_Pixel_Sizes(s_ft_face, TEXT_SIDE_QUOTE_SIZE, TEXT_SIDE_QUOTE_SIZE);
+
+    int line_widths[16] = {0};
+    int line_count = 0;
+    int cur_x = 0;
+    const char *p = quote;
+    int mg = 0;
+    while (*p && line_count < 16) {
+        unsigned cp = utf8_codepoint(&p);
+        if (cp == 0) break;
+        int gi = FT_Get_Char_Index(s_ft_face, cp);
+        if (gi == 0) continue;
+        FT_Load_Glyph(s_ft_face, gi, FT_LOAD_NO_BITMAP);
+        int adv = s_ft_face->glyph->advance.x >> 6;
+        if ((mg & 0x03) == 0) vTaskDelay(1);
+        mg++;
+        if (cur_x + adv > wrap_w && cur_x > 0) {
+            line_widths[line_count] = cur_x;
+            line_count++;
+            cur_x = 0;
+        }
+        cur_x += adv;
+    }
+    if (cur_x > 0) { line_widths[line_count] = cur_x; line_count++; }
+    if (line_count == 0) return ESP_OK;
+
+    int tw = 0;
+    for (int i = 0; i < line_count; i++) if (line_widths[i] > tw) tw = line_widths[i];
+
+    int quote_h = line_count * (TEXT_SIDE_QUOTE_SIZE + TEXT_SIDE_LINE_SPACING) - TEXT_SIDE_LINE_SPACING;
+    int source_h = (source && source[0]) ? (TEXT_SIDE_SOURCE_SIZE + TEXT_SIDE_SOURCE_GAP) : 0;
+    int th = quote_h + source_h;
+
+    /* ---- 2. render glyphs into alpha + per-glyph colour buffers ---- */
+    uint8_t *alpha = (uint8_t *)calloc(1, (size_t)tw * th);
+    uint8_t *color = (uint8_t *)calloc(1, (size_t)tw * th);  /* 0=black, 1=white */
+    if (!alpha || !color) {
+        free(alpha);
+        free(color);
+        return ESP_ERR_NO_MEM;
+    }
+
+    int draw_y = 0;
+    int line_idx = 0;
+    p = quote;
+    cur_x = 0;
+    FT_Set_Pixel_Sizes(s_ft_face, TEXT_SIDE_QUOTE_SIZE, TEXT_SIDE_QUOTE_SIZE);
+    int dg = 0;
+    while (*p && line_idx < line_count) {
+        unsigned cp = utf8_codepoint(&p);
+        if (cp == 0) break;
+        int gi = FT_Get_Char_Index(s_ft_face, cp);
+        if (gi == 0) continue;
+        FT_Load_Glyph(s_ft_face, gi, FT_LOAD_RENDER);
+        if ((dg & 0x03) == 0) vTaskDelay(1);
+        dg++;
+        FT_GlyphSlot slot = s_ft_face->glyph;
+        int adv = slot->advance.x >> 6;
+        int left = cur_x + slot->bitmap_left;
+        int baseline = draw_y + (int)(TEXT_SIDE_QUOTE_SIZE * 0.85f);
+        int top = baseline - slot->bitmap_top;
+
+        if (cur_x + adv > wrap_w && cur_x > 0) {
+            line_idx++;
+            draw_y += TEXT_SIDE_QUOTE_SIZE + TEXT_SIDE_LINE_SPACING;
+            cur_x = 0;
+            FT_Load_Glyph(s_ft_face, gi, FT_LOAD_RENDER);
+            left = cur_x + slot->bitmap_left;
+            baseline = draw_y + (int)(TEXT_SIDE_QUOTE_SIZE * 0.85f);
+            top = baseline - slot->bitmap_top;
+        }
+
+        /* Per-glyph colour: sample this glyph's own background in the rotated
+           frame, so a dark glyph on dark clothing flips to white. */
+        int sx0 = W - th + top;
+        int sy0 = tw - left - (int)slot->bitmap.width;
+        float gl, gdb, gdw;
+        text_color_t gcol = choose_text_color(rgba, W, H,
+                                              sx0, sy0,
+                                              sx0 + (int)slot->bitmap.rows,
+                                              sy0 + (int)slot->bitmap.width,
+                                              &gl, &gdb, &gdw);
+        uint8_t gc = (gcol == TEXT_BLACK) ? 0 : 1;
+
+        for (int gy = 0; gy < (int)slot->bitmap.rows; gy++) {
+            int ty = top + gy;
+            if (ty < 0 || ty >= th) continue;
+            for (int gx = 0; gx < (int)slot->bitmap.width; gx++) {
+                int tx = left + gx;
+                if (tx < 0 || tx >= tw) continue;
+                unsigned char a = slot->bitmap.buffer[gy * slot->bitmap.pitch + gx];
+                if (a > alpha[ty * tw + tx]) {
+                    alpha[ty * tw + tx] = a;
+                    color[ty * tw + tx] = gc;
+                }
+            }
+        }
+        cur_x += adv;
+    }
+
+    /* ---- 3. source line (below the quote, left-aligned) ---- */
+    if (source && source[0]) {
+        FT_Set_Pixel_Sizes(s_ft_face, TEXT_SIDE_SOURCE_SIZE, TEXT_SIDE_SOURCE_SIZE);
+        int sy_base = quote_h + TEXT_SIDE_SOURCE_GAP;
+        const char *sp = source;
+        int sx_cur = 0;
+        while (*sp) {
+            unsigned cp = utf8_codepoint(&sp);
+            if (cp == 0) break;
+            int gi = FT_Get_Char_Index(s_ft_face, cp);
+            if (gi == 0) continue;
+            FT_Load_Glyph(s_ft_face, gi, FT_LOAD_RENDER);
+            FT_GlyphSlot slot = s_ft_face->glyph;
+            int adv = slot->advance.x >> 6;
+            int left = sx_cur + slot->bitmap_left;
+            int baseline = sy_base + (int)(TEXT_SIDE_SOURCE_SIZE * 0.85f);
+            int top = baseline - slot->bitmap_top;
+            /* Per-glyph colour for the source line too. */
+            int ssx0 = W - th + top;
+            int ssy0 = tw - left - (int)slot->bitmap.width;
+            float sgl, sgdb, sgdw;
+            text_color_t sgcol = choose_text_color(rgba, W, H,
+                                                   ssx0, ssy0,
+                                                   ssx0 + (int)slot->bitmap.rows,
+                                                   ssy0 + (int)slot->bitmap.width,
+                                                   &sgl, &sgdb, &sgdw);
+            uint8_t sgc = (sgcol == TEXT_BLACK) ? 0 : 1;
+
+            for (int gy = 0; gy < (int)slot->bitmap.rows; gy++) {
+                int ty = top + gy;
+                if (ty < 0 || ty >= th) continue;
+                for (int gx = 0; gx < (int)slot->bitmap.width; gx++) {
+                    int tx = left + gx;
+                    if (tx < 0 || tx >= tw) continue;
+                    unsigned char a = slot->bitmap.buffer[gy * slot->bitmap.pitch + gx];
+                    if (a > alpha[ty * tw + tx]) {
+                        alpha[ty * tw + tx] = a;
+                        color[ty * tw + tx] = sgc;
+                    }
+                }
+            }
+            sx_cur += adv;
+        }
+    }
+
+    /* ---- 4. rotate 90° onto the right edge, using per-glyph colour ---- */
+    for (int ty = 0; ty < th; ty++) {
+        for (int tx = 0; tx < tw; tx++) {
+            unsigned char a = alpha[ty * tw + tx];
+            if (a == 0) continue;
+            int sx = W - th + ty;
+            int sy = tw - 1 - tx;
+            if (sx < 0 || sx >= W || sy < 0 || sy >= H) continue;
+            uint8_t tr = color[ty * tw + tx] ? 255 : 0;
+            int idx = (sy * W + sx) * 4;
+            float af = (float)a / 255.0f;
+            rgba[idx + 0] = (uint8_t)((float)rgba[idx + 0] * (1.0f - af) + (float)tr * af + 0.5f);
+            rgba[idx + 1] = (uint8_t)((float)rgba[idx + 1] * (1.0f - af) + (float)tr * af + 0.5f);
+            rgba[idx + 2] = (uint8_t)((float)rgba[idx + 2] * (1.0f - af) + (float)tr * af + 0.5f);
+            rgba[idx + 3] = 255;
+        }
+    }
+
+    free(alpha);
+    free(color);
+    ESP_LOGI(TAG, "Side overlay complete (%d×%d text -> vertical)", tw, th);
     return ESP_OK;
 }

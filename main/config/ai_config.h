@@ -23,7 +23,7 @@
 
 /* ---- HTTP client settings ---- */
 #define AI_IMAGE_TIMEOUT_MS  120000  /* image generation can be slow */
-#define AI_CHAT_TIMEOUT_MS    30000  /* chat completion is fast */
+#define AI_CHAT_TIMEOUT_MS   120000  /* deepseek-v4-pro is a reasoning model — slow */
 
 /* ---- Buffer sizes ---- */
 #define AI_IMAGE_URL_MAX_LEN       2048
