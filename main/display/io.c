@@ -27,7 +27,7 @@
 
 #define EPD_BUFFER_SIZE  48000                    /* 800×480/8 */
 #define SPI_CHUNK_MAX    8192                     /* keep DMA priv buffer small enough for internal RAM */
-#define EPD_SPI_FREQ_HZ  (4 * 1000 * 1000)        /* 4 MHz (matches GxEPD2) */
+#define EPD_SPI_FREQ_HZ  (10 * 1000 * 1000)       /* 10 MHz */
 
 static spi_device_handle_t spi;
 static bool s_io_initialised = false;

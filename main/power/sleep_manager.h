@@ -25,7 +25,21 @@ extern "C" {
 #endif
 
 #define SLEEP_BUTTON_GPIO      48
-#define ADMIN_TIMEOUT_SEC      (15 * 60)   /* admin backend auto-off */
+#define ADMIN_TIMEOUT_SEC      (15 * 60)
+
+/* Wakeup source, preserved across esp_restart() via RTC memory (esp_restart
+   loses the normal esp_sleep wakeup cause, so we stash it before rebooting). */
+typedef enum {
+    SLEEP_WAKE_NONE = 0,   /* power-on / reset — not a light-sleep wakeup */
+    SLEEP_WAKE_TIMER,      /* RTC timer fired (daily refresh) */
+    SLEEP_WAKE_GPIO,       /* GPIO48 button pressed */
+} sleep_wake_cause_t;
+
+/*
+ * Return the wakeup source for this boot (see sleep_wake_cause_t).  Call in
+ * app_main to decide the daily-task vs admin-backend dispatch.
+ */
+sleep_wake_cause_t sleep_manager_get_wake_cause(void);   /* admin backend auto-off */
 
 /*
  * Configure both wakeup sources and enter light sleep.  This function does

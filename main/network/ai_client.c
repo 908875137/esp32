@@ -11,9 +11,12 @@
 #include <string.h>
 #include <stdlib.h>
 #include <stdio.h>
+#include <fcntl.h>
+#include <unistd.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_log.h"
+#include "esp_random.h"
 #include "esp_http_client.h"
 #include "esp_crt_bundle.h"
 #include "cJSON.h"
@@ -127,6 +130,46 @@ static char *http_post_json(const char *url, const char *json_body,
 }
 
 /* ================================================================
+ * Quote history — remember the most recent generated quotes so we can feed
+ * them back to DeepSeek and avoid repetition.
+ * ================================================================ */
+
+#define AI_HISTORY_PATH   "/sdcard/ai_history.txt"
+#define AI_HISTORY_BUF    2048
+
+/* Read the tail of the history file (most recent quotes).  Returns the number
+   of bytes read, or 0 if there is no history yet. */
+static size_t read_ai_history(char *buf, size_t buf_size) {
+    buf[0] = '\0';
+    FILE *f = fopen(AI_HISTORY_PATH, "rb");
+    if (!f) return 0;
+
+    fseek(f, 0, SEEK_END);
+    long size = ftell(f);
+    if (size <= 0) {
+        fclose(f);
+        return 0;
+    }
+    size_t want = (size_t)size > buf_size - 1 ? buf_size - 1 : (size_t)size;
+    fseek(f, size - (long)want, SEEK_SET);
+    size_t n = fread(buf, 1, want, f);
+    buf[n] = '\0';
+    fclose(f);
+    return n;
+}
+
+/* Append one quote.  Uses POSIX O_APPEND because stdio fopen("a") does not
+   actually flush writes on FATFS. */
+static void append_ai_history(const char *quote) {
+    if (!quote || !quote[0]) return;
+    int fd = open(AI_HISTORY_PATH, O_WRONLY | O_CREAT | O_APPEND, 0666);
+    if (fd < 0) return;
+    write(fd, quote, strlen(quote));
+    write(fd, "\n", 1);
+    close(fd);
+}
+
+/* ================================================================
  * Stage 1: DeepSeek → daily quote
  * ================================================================ */
 
@@ -148,9 +191,23 @@ esp_err_t ai_generate_daily_quote(daily_quote_t *quote) {
     cJSON_AddStringToObject(sys_msg, "content", AI_QUOTE_SYSTEM_PROMPT);
     cJSON_AddItemToArray(messages, sys_msg);
 
+    /* Build the user prompt — include recent history so the model avoids
+       repeating or near-repeating previous quotes. */
+    char history[AI_HISTORY_BUF] = {0};
+    read_ai_history(history, sizeof(history));
+
+    char user_prompt[AI_HISTORY_BUF + 256];
+    if (history[0] != '\0') {
+        snprintf(user_prompt, sizeof(user_prompt),
+            "%s\n\n以下是最近已经生成过的句子，请务必避免重复，也不要过于相似：\n%s",
+            AI_QUOTE_USER_PROMPT, history);
+    } else {
+        snprintf(user_prompt, sizeof(user_prompt), "%s", AI_QUOTE_USER_PROMPT);
+    }
+
     cJSON *user_msg = cJSON_CreateObject();
     cJSON_AddStringToObject(user_msg, "role", "user");
-    cJSON_AddStringToObject(user_msg, "content", AI_QUOTE_USER_PROMPT);
+    cJSON_AddStringToObject(user_msg, "content", user_prompt);
     cJSON_AddItemToArray(messages, user_msg);
 
     char *req_str = cJSON_PrintUnformatted(root);
@@ -252,6 +309,9 @@ esp_err_t ai_generate_daily_quote(daily_quote_t *quote) {
     ESP_LOGI(TAG, "Type: %s", quote->type);
     ESP_LOGI(TAG, "Mood: %s", quote->mood);
 
+    /* Remember this quote so the next generation avoids it. */
+    append_ai_history(quote->quote);
+
     return ESP_OK;
 }
 
@@ -339,7 +399,10 @@ esp_err_t ai_generate_image(const char *prompt, const char *size,
 }
 
 /* ================================================================
- * Prompt builder: daily_quote_t → Hunyuan image prompt
+ * Prompt builder: random pretty/cozy/fun theme → Hunyuan image prompt.
+ * The image is now INDEPENDENT of the daily quote — pick a random theme and
+ * style, so the artwork is always fresh and pleasant rather than a literal
+ * illustration of the text.
  * ================================================================ */
 
 void ai_build_image_prompt(const daily_quote_t *quote,
@@ -347,78 +410,36 @@ void ai_build_image_prompt(const daily_quote_t *quote,
     if (!buf || buf_size == 0) return;
     buf[0] = '\0';
 
-    const char *q = quote && quote->quote[0]   ? quote->quote   : "";
-    const char *a = quote && quote->author[0]  ? quote->author  : "未知";
-    const char *s = quote && quote->source[0]  ? quote->source  : "未知";
-    const char *m = quote && quote->mood[0]    ? quote->mood    : "";
+    /* Randomly pick one pleasant theme — this is what makes each image
+       different, not the quote. */
+    static const char *themes[] = {
+        "一只可爱的小动物（小猫、小狗、兔子、狐狸、熊猫等）在温暖治愈的场景里",
+        "温馨的日常生活一隅（阳光洒进窗边、书桌、咖啡杯、绿植、翻开的书）",
+        "治愈的自然风景（海边、森林小径、山间云雾、草原花田）",
+        "梦幻的星空、云海、极光或月夜",
+        "有趣的童话插画场景，充满想象力",
+        "精致的美食或甜点特写（蛋糕、咖啡、水果）",
+        "复古的旅行风景（老式火车、海边小镇、石板老街）",
+        "活泼的城市街角（花店、书店、咖啡馆、清晨的市场）",
+    };
+    int t = esp_random() % (sizeof(themes) / sizeof(themes[0]));
 
     snprintf(buf, buf_size,
-        "为 7.5 英寸屏创作一幅每日艺术作品。画面尺寸 854×512，横向构图。\n\n"
+        "创作一幅适合电子相框显示的横版（854×512）视觉艺术作品。\n"
+        "本次主题：%s。\n\n"
 
-        "【核心灵感】\n"
-        "这是一句来自作者\"%s\"、作品/出处\"%s\"的文字：\"%s\"。\n"
-        "这句话的情绪：%s。\n\n"
-        
-        "请根据这句话的含义、情绪、故事和时代背景，构建一个完整、有故事感的纯视觉场景。\n"
-        "不要直接表现文字本身，而是用画面表达这句话的精神和情绪。\n"
-        "让画面本身成为主要内容。\n\n"
+        "【风格】\n"
+        "任选一种：清新插画、日系治愈、水彩、电影感摄影、温暖童话、可爱卡通。\n"
+        "整体要好看、可爱、有趣、治愈、温暖。\n\n"
 
-        "【视觉主体选择】\n"
-        "优先选择建筑、城市街景、自然风景、室内空间、生活物件、动物、交通工具或具有故事感的环境作为视觉主体。\n"
-        "可以使用人物，但人物不是默认主体，只作为完整场景中的叙事元素。\n"
-        "优先通过环境、物体、光影、空间和动作表达情绪，而不是依靠人物脸部表达情绪。\n\n"
-
-        "【生物与昆虫限制】\n"
-        "绝对不要出现大量虫子、昆虫、飞虫、爬虫或成群结队的虫子。\n"
-        "绝对不要出现巨大的虫子或昆虫特写，不要画出放大的虫类作为视觉主体。\n"
-        "不要因为文字中提到了虫子、跳蚤、虱子等意象，就在画面中直接绘制大量真实的虫子。\n"
-        "最多允许偶尔出现一只很小的苍蝇、蜜蜂或蝴蝶作为自然环境的点缀，且必须很小、不显眼、远离视觉焦点。\n"
-        "优先用隐喻、抽象或象征的方式表达这类意象，而不是直接画出真实的虫子。\n\n"
-
-        "【人物限制】\n"
-        "不要把人物肖像作为画面主体。\n"
-        "禁止人物正脸特写、侧脸特写、半身肖像、证件照式构图、美颜人像、人物写真。\n"
-        "不要让人物的脸占据画面主要视觉区域。\n"
-        "如果需要人物，优先使用远景、背影、剪影、小比例人物或多人场景。\n"
-        "人物通常不应超过画面面积的 15%%。\n"
-        "不要让观众的第一视觉焦点落在人脸上。\n\n"
+        "【构图与色彩】\n"
+        "画面明亮通透、色彩丰富有层次，主体占据画面绝大部分区域，构图饱满。\n"
+        "要有故事感和氛围感，不要中央一个小主体加四周大面积空白。\n\n"
 
         "【严格禁止】\n"
-        "画面上绝对不能出现任何文字、字幕、标题、Logo、字母、数字、水印、签名、书法、符号。\n"
-        "不要绘制作者名字、作品名称、原文台词。\n"
-        "不要绘制名言海报、励志海报或文字卡片。\n"
-        "所有文字由外部系统在图片生成后单独叠加。\n\n"
-
-        "【构图】\n"
-        "主体视觉内容应该占据画面绝大部分区域，画面内容覆盖约 80%%～95%%。\n"
-        "不要出现中央一个小主体加四周大面积空白的构图。\n"
-        "不要出现大面积纯白或纯黑的空白区域。\n"
-        "不要把画面设计成上下两个独立区域。\n"
-        "使用完整场景、前中后景、三分法、对角线、框景或自然视觉引导线构建丰富的空间层次。\n\n"
-
-        "【文字区域】\n"
-        "不要为文字专门划出独立区域。\n"
-        "不要产生明显的底栏、字幕栏、信息栏、矩形文字区域或分割线。\n"
-        "画面首先必须作为一幅完整的纯视觉艺术作品成立。\n"
-        "可以在自然存在的低复杂度区域保留少量视觉空间，例如天空、墙面、雾气、地面或简单背景。\n"
-        "这些区域必须自然融入场景，不能看起来像专门为文字预留的空白。\n\n"
-
-        "【色彩】\n"
-        "避免大面积纯黑，避免整体阴暗压抑。\n"
-        "保持明亮、通透、有层次的画面。\n"
-        "允许温暖、轻松、可爱、浪漫、快乐、明亮的视觉作品。\n"
-
-        "【整体感觉】\n"
-        "电影感、文学感、艺术感、高级、自然、克制、有故事、有画面感。\n"
-        "根据每句话的内容自动选择不同的视觉风格，不要固定模板。\n"
-        "可以是电影感艺术摄影、城市生活、自然风景、温暖日常、动物、旅行、复古电影、现代插画、日系动画、欧美动画、童话或轻松可爱的卡通等。\n"
-        "不要所有作品都使用人物、雨夜、孤独背影、窗边人物等套路。\n"
-        "不要像企业宣传海报、励志海报、名言卡片或手机壁纸模板。\n"
-        "不要使用随机几何图形、装饰性色块、书法、毛笔、砚台、古典书房等模板化元素。\n\n"
-
-        "【最终要求】\n"
-        "只生成完整的纯视觉艺术画面。\n"
-        "不要生成任何文字、字母、数字、Logo、水印或符号。\n"
-        "文字全部由外部系统在图片生成后单独叠加。",
-        a, s, q, m);
+        "不要出现任何文字、字母、数字、Logo、水印、签名。\n"
+        "不要大量虫子昆虫。\n"
+        "不要人物正脸特写、证件照式构图。\n"
+        "不要阴暗压抑、大面积纯黑。",
+        themes[t]);
 }

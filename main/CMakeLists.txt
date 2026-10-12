@@ -16,9 +16,12 @@ set(srcs
     "image/image_decoder.c"
     "image/image_processing.c"
     "image/color_space.c"
-    # Web (provisioning HTTP server + admin server)
+    # Web (provisioning HTTP server + admin server + split API handlers)
     "web/web_server.c"
     "web/admin_server.c"
+    "web/api_core.c"
+    "web/api_content.c"
+    "web/api_files.c"
     # Power (light sleep + RTC-timer/GPIO wakeup)
     "power/sleep_manager.c"
     # Text rendering (FreeType Chinese text overlay)
@@ -32,6 +35,8 @@ set(srcs
     "storage/log_to_sd.c"
     # OTA (firmware upgrade via esp_ota_ops)
     "ota/ota_manager.c"
+    # Content (image+quote selection, AI pipeline, daily task)
+    "content/daily_content.c"
     )
 
 idf_component_register(SRCS ${srcs}
@@ -47,6 +52,7 @@ idf_component_register(SRCS ${srcs}
                                  "power"
                                  "input"
                                  "ota"
+                                 "content"
                     PRIV_REQUIRES
                         esp_driver_spi
                         esp_driver_gpio

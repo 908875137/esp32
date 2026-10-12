@@ -8,6 +8,7 @@
 #include "esp_log.h"
 #include "esp_sleep.h"
 #include "esp_system.h"
+#include "esp_attr.h"
 #include "driver/gpio.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -16,6 +17,13 @@
 #include "wifi_manager.h"
 
 static const char *TAG = "sleep";
+
+/* Preserved across esp_restart() — RTC memory survives a software reset. */
+static RTC_DATA_ATTR sleep_wake_cause_t s_wake_cause = SLEEP_WAKE_NONE;
+
+sleep_wake_cause_t sleep_manager_get_wake_cause(void) {
+    return s_wake_cause;
+}
 
 uint64_t sleep_manager_us_until_next_hour(uint32_t now, int hour) {
     /* Hour-of-day from unix time (UTC).  A full timezone-aware daily scheduler
@@ -70,9 +78,17 @@ esp_err_t sleep_manager_enter(int refresh_hour) {
     ESP_LOGI(TAG, "Entering light sleep...");
     esp_light_sleep_start();
 
-    /* We only get here if sleep was entered and returned (e.g. wakeup),
-       or if sleep setup failed.  Reboot clean either way. */
-    ESP_LOGW(TAG, "Woke from light sleep — restarting clean");
+    /* Wakeup happened — read the real cause NOW (s_light_sleep_wakeup is still
+       set at this point), stash it in RTC memory, then reboot clean. */
+    esp_sleep_wakeup_cause_t cause = esp_sleep_get_wakeup_cause();
+    if (cause == ESP_SLEEP_WAKEUP_GPIO) {
+        s_wake_cause = SLEEP_WAKE_GPIO;
+    } else if (cause == ESP_SLEEP_WAKEUP_TIMER) {
+        s_wake_cause = SLEEP_WAKE_TIMER;
+    } else {
+        s_wake_cause = SLEEP_WAKE_NONE;
+    }
+    ESP_LOGW(TAG, "Woke from light sleep (cause=%d) — restarting clean", (int)cause);
     esp_restart();
     return ESP_OK;   /* unreachable */
 }

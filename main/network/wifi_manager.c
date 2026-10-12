@@ -222,10 +222,6 @@ esp_err_t wifi_manager_init(void) {
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
     ESP_ERROR_CHECK(esp_wifi_init(&cfg));
 
-    /* Reduce TX power to shrink the WiFi current spike (battery brownout
-       mitigation).  Unit is 0.25 dBm; 32 = 8 dBm.  Lower = less current. */
-    esp_wifi_set_max_tx_power(32);
-
     /* Register event handlers */
     ESP_ERROR_CHECK(esp_event_handler_instance_register(
         WIFI_EVENT, ESP_EVENT_ANY_ID, &wifi_event_handler, NULL, NULL));

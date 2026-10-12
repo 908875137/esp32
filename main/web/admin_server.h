@@ -6,15 +6,24 @@
  * Runs AFTER WiFi STA connects, on port 80 with mDNS "thinkink.local".
  * The provisioning web_server (web/ web_server.c) is separate and runs
  * only during SoftAP provisioning.
+ *
+ * REST handlers are split by domain into api_content.c / api_files.c /
+ * api_core.c; this header exposes the shared helpers and the per-domain
+ * route-registration entry points.
  */
 #pragma once
 
+#include <stddef.h>
 #include "esp_err.h"
+#include "esp_http_server.h"
 #include "config_store.h"
 
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+/* Static web UI root on the SD card */
+#define WWW_ROOT "/sdcard/www"
 
 /* Request IDs returned by admin_server_take_request() */
 typedef enum {
@@ -29,9 +38,6 @@ typedef enum {
 
 /**
  * Start mDNS ("thinkink.local") + HTTP server.
- *
- * Static files are served from /sdcard/www (if present).  REST API lives
- * under /api/ (see admin_server.c).  Returns ESP_OK on success.
  */
 esp_err_t admin_server_start(void);
 
@@ -55,6 +61,22 @@ int admin_server_take_request(void);
  * For ADMIN_REQ_DISPLAY_FILE, returns the requested filename.
  */
 const char *admin_server_get_request_filename(void);
+
+/* ---- shared helpers (used by the api_*.c handler files) ---- */
+
+void admin_send_json(httpd_req_t *req, const char *json);
+const char *admin_content_type(const char *path);
+void admin_url_decode(const char *src, char *dst, size_t dst_len);
+
+void admin_set_request(int req);
+void admin_set_request_filename(const char *name);
+thinkink_mode_t admin_get_mode(void);
+
+/* ---- per-domain route registration (called from admin_server_start) ---- */
+
+void api_content_register(httpd_handle_t server);
+void api_files_register(httpd_handle_t server);
+void api_core_register(httpd_handle_t server);
 
 #ifdef __cplusplus
 }
