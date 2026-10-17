@@ -11,6 +11,7 @@
 - **SD 模式**：从 SD 卡本地图片库随机/顺序选图 + 本地文本库选一句，完全离线
 
 > 详细硬件接线见 [HARDWARE.md](HARDWARE.md)。
+> 开发/调试踩过的坑见 [TROUBLESHOOTING.md](TROUBLESHOOTING.md)。
 
 ---
 

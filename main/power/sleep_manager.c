@@ -8,7 +8,8 @@
 #include "esp_log.h"
 #include "esp_sleep.h"
 #include "esp_system.h"
-#include "esp_attr.h"
+#include "nvs_flash.h"
+#include "nvs.h"
 #include "driver/gpio.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -18,11 +19,29 @@
 
 static const char *TAG = "sleep";
 
-/* Preserved across esp_restart() — RTC memory survives a software reset. */
-static RTC_DATA_ATTR sleep_wake_cause_t s_wake_cause = SLEEP_WAKE_NONE;
+#define WAKE_CAUSE_NVS_NAMESPACE  "thinkink"
+#define WAKE_CAUSE_NVS_KEY        "wake_cause"
 
 sleep_wake_cause_t sleep_manager_get_wake_cause(void) {
-    return s_wake_cause;
+    /* Persisted in NVS (flash) before esp_restart(), so it survives the soft
+       reset a light-sleep wake triggers.  RTC_DATA_ATTR does NOT survive
+       esp_restart() on ESP32-S3/IDF v6 — hence NVS.  The key is erased on
+       read, so a plain power-on sees NONE. */
+    sleep_wake_cause_t wc = SLEEP_WAKE_NONE;
+
+    nvs_handle_t h;
+    if (nvs_open(WAKE_CAUSE_NVS_NAMESPACE, NVS_READWRITE, &h) != ESP_OK) {
+        return wc;
+    }
+
+    uint8_t v = (uint8_t)SLEEP_WAKE_NONE;
+    if (nvs_get_u8(h, WAKE_CAUSE_NVS_KEY, &v) == ESP_OK) {
+        wc = (sleep_wake_cause_t)v;
+        nvs_erase_key(h, WAKE_CAUSE_NVS_KEY);
+        nvs_commit(h);
+    }
+    nvs_close(h);
+    return wc;
 }
 
 uint64_t sleep_manager_us_until_next_hour(uint32_t now, int hour) {
@@ -79,15 +98,25 @@ esp_err_t sleep_manager_enter(int refresh_hour) {
     esp_light_sleep_start();
 
     /* Wakeup happened — read the real cause NOW (s_light_sleep_wakeup is still
-       set at this point), stash it in RTC memory, then reboot clean. */
+       set at this point), stash it in NVS, then reboot clean. */
     esp_sleep_wakeup_cause_t cause = esp_sleep_get_wakeup_cause();
+    sleep_wake_cause_t wc;
     if (cause == ESP_SLEEP_WAKEUP_GPIO) {
-        s_wake_cause = SLEEP_WAKE_GPIO;
+        wc = SLEEP_WAKE_GPIO;
     } else if (cause == ESP_SLEEP_WAKEUP_TIMER) {
-        s_wake_cause = SLEEP_WAKE_TIMER;
+        wc = SLEEP_WAKE_TIMER;
     } else {
-        s_wake_cause = SLEEP_WAKE_NONE;
+        wc = SLEEP_WAKE_NONE;
     }
+
+    /* Persist to NVS (flash) — RTC_DATA_ATTR does not survive esp_restart(). */
+    nvs_handle_t h;
+    if (nvs_open(WAKE_CAUSE_NVS_NAMESPACE, NVS_READWRITE, &h) == ESP_OK) {
+        nvs_set_u8(h, WAKE_CAUSE_NVS_KEY, (uint8_t)wc);
+        nvs_commit(h);
+        nvs_close(h);
+    }
+
     ESP_LOGW(TAG, "Woke from light sleep (cause=%d) — restarting clean", (int)cause);
     esp_restart();
     return ESP_OK;   /* unreachable */

@@ -119,6 +119,14 @@ static void run_provisioning(void) {
 /* ---- Main ---- */
 
 int app_main(void) {
+    /* ---- Init NVS first — sleep_manager_get_wake_cause() reads the wake
+       cause from NVS (persisted there before the last esp_restart()). ---- */
+    esp_err_t nvs_err = nvs_flash_init();
+    if (nvs_err == ESP_ERR_NVS_NO_FREE_PAGES || nvs_err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+        nvs_flash_erase();
+        nvs_flash_init();
+    }
+
     sleep_wake_cause_t wc = sleep_manager_get_wake_cause();
     esp_reset_reason_t rr = esp_reset_reason();
 
@@ -127,13 +135,6 @@ int app_main(void) {
     printf("  wakeup cause = %d\n", (int)wc);
     printf("  reset reason = %d\n", (int)rr);
     printf("========================================\n\n");
-
-    /* ---- Init NVS ---- */
-    esp_err_t nvs_err = nvs_flash_init();
-    if (nvs_err == ESP_ERR_NVS_NO_FREE_PAGES || nvs_err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
-        nvs_flash_erase();
-        nvs_flash_init();
-    }
 
     /* ---- Init SD + config ---- */
     sd_card_init();

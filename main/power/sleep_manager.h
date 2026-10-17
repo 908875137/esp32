@@ -27,8 +27,9 @@ extern "C" {
 #define SLEEP_BUTTON_GPIO      48
 #define ADMIN_TIMEOUT_SEC      (15 * 60)
 
-/* Wakeup source, preserved across esp_restart() via RTC memory (esp_restart
-   loses the normal esp_sleep wakeup cause, so we stash it before rebooting). */
+/* Wakeup source, preserved across esp_restart() via NVS/flash (esp_restart
+   loses the normal esp_sleep wakeup cause, and RTC_DATA_ATTR does not survive
+   it on ESP32-S3/IDF v6, so we stash it in NVS before rebooting). */
 typedef enum {
     SLEEP_WAKE_NONE = 0,   /* power-on / reset — not a light-sleep wakeup */
     SLEEP_WAKE_TIMER,      /* RTC timer fired (daily refresh) */

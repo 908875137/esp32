@@ -6,4 +6,4 @@ cmake_minimum_required(VERSION 3.22)
 set(ENV{IDF_TARGET} esp32s3)
 
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
-project(epd-uc8179 VERSION 1.0.0)
+project(epd-uc8179 VERSION 1.0.1)
