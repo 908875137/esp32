@@ -52,7 +52,11 @@ static void epd_show_provisioning_info(const char *ap_ssid) {
 /* Button task callback — just set a flag; the heavy work runs in the main
    loop (the button task stack is only 2KB). */
 static void on_btn_short_press(void) {
-    s_btn_short = true;
+    /* Drop presses while a refresh is running — otherwise impatient repeated
+       presses chain into endless consecutive refreshes. */
+    if (!content_is_busy()) {
+        s_btn_short = true;
+    }
 }
 
 /* ---- Admin backend: WiFi + mDNS + HTTP, auto-off after 15 min ---- */

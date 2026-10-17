@@ -42,6 +42,13 @@ void content_handle_request(int req);
  */
 bool content_ensure_wifi(void);
 
+/**
+ * True while a content refresh is in progress (daily task / next / request).
+ * The button callback uses this to drop presses that arrive mid-refresh, so
+ * impatient repeated presses don't chain into endless consecutive refreshes.
+ */
+bool content_is_busy(void);
+
 #ifdef __cplusplus
 }
 #endif

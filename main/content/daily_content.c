@@ -43,6 +43,7 @@ static const char *TAG = "content";
 
 static const thinkink_config_t *s_cfg = NULL;
 static bool s_text_ok = false;   /* text renderer initialised */
+static volatile bool s_busy = false;   /* true while a refresh is in progress */
 
 /* ---- EPD display helpers ---- */
 
@@ -347,14 +348,23 @@ void content_init(const thinkink_config_t *cfg) {
 }
 
 void content_run_daily_task(void) {
+    s_busy = true;
     run_daily_task();
+    s_busy = false;
 }
 
 void content_show_next(void) {
+    s_busy = true;
     show_next_content();
+    s_busy = false;
+}
+
+bool content_is_busy(void) {
+    return s_busy;
 }
 
 void content_handle_request(int req) {
+    s_busy = true;
     switch (req) {
     case ADMIN_REQ_NEXT:
     case ADMIN_REQ_PREV:
@@ -398,4 +408,5 @@ void content_handle_request(int req) {
     default:
         break;
     }
+    s_busy = false;
 }
