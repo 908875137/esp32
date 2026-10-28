@@ -407,6 +407,16 @@ esp_err_t image_download_and_decode_rgba(const char *url,
 
     ESP_LOGI(TAG, "PNG downloaded: %d bytes", acc.len);
 
+    /* Save a copy as the "current AI image" so the Web UI can show a
+       thumbnail without mixing AI images into the SD library. */
+    {
+        FILE *save = fopen("/sdcard/current_ai.png", "wb");
+        if (save) {
+            fwrite(acc.buf, 1, (size_t)acc.len, save);
+            fclose(save);
+        }
+    }
+
     /* Shrink accum to actual size so lodepng has maximum contiguous PSRAM */
     {
         uint8_t *trimmed = (uint8_t *)heap_caps_realloc(acc.buf, acc.len, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);

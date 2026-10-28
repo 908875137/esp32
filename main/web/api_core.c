@@ -18,6 +18,7 @@
 #include "image_library.h"
 #include "quote_library.h"
 #include "daily.h"
+#include "current.h"
 #include "ota_manager.h"
 
 static const char *TAG = "api_core";
@@ -52,9 +53,8 @@ static esp_err_t api_status_handler(httpd_req_t *req) {
 /* ---- GET /api/current ---- */
 
 static esp_err_t api_current_handler(httpd_req_t *req) {
-    char date[16] = {0};
-    uint32_t image_id = 0, quote_id = 0;
-    if (daily_get_last(date, sizeof(date), &image_id, &quote_id) != ESP_OK) {
+    current_content_t cur;
+    if (current_load(&cur) != ESP_OK) {
         admin_send_json(req, "{\"success\":true,\"has_content\":false}");
         return ESP_OK;
     }
@@ -62,25 +62,26 @@ static esp_err_t api_current_handler(httpd_req_t *req) {
     cJSON *root = cJSON_CreateObject();
     cJSON_AddBoolToObject(root, "success", true);
     cJSON_AddBoolToObject(root, "has_content", true);
-    cJSON_AddStringToObject(root, "date", date);
+    cJSON_AddStringToObject(root, "mode", cur.mode == THINKINK_MODE_AI ? "ai" : "sd");
+    cJSON_AddStringToObject(root, "quote_text", cur.quote_text);
+    cJSON_AddStringToObject(root, "quote_author", cur.quote_author);
+    cJSON_AddStringToObject(root, "quote_source", cur.quote_source);
 
-    if (image_id != 0) {
+    if (cur.mode == THINKINK_MODE_SD && cur.image_id != 0) {
         char name[16];
-        snprintf(name, sizeof(name), "%08lu.png", (unsigned long)image_id);
+        snprintf(name, sizeof(name), "%08lu.png", (unsigned long)cur.image_id);
         uint32_t used = 0;
-        image_library_get_used_count(image_id, &used);
-        cJSON_AddNumberToObject(root, "image_id", (double)image_id);
+        image_library_get_used_count(cur.image_id, &used);
+        cJSON_AddNumberToObject(root, "image_id", (double)cur.image_id);
         cJSON_AddStringToObject(root, "image_name", name);
         cJSON_AddNumberToObject(root, "image_used", (double)used);
-    }
-    if (quote_id != 0) {
-        quote_t q;
-        if (quote_library_get_by_id(quote_id, &q) == ESP_OK) {
-            cJSON_AddNumberToObject(root, "quote_id", (double)quote_id);
-            cJSON_AddStringToObject(root, "quote_text", q.text);
-            cJSON_AddStringToObject(root, "quote_author", q.author);
-            cJSON_AddStringToObject(root, "quote_source", q.source);
-            cJSON_AddNumberToObject(root, "quote_used", (double)q.used_count);
+
+        if (cur.quote_id != 0) {
+            cJSON_AddNumberToObject(root, "quote_id", (double)cur.quote_id);
+            quote_t q;
+            if (quote_library_get_by_id(cur.quote_id, &q) == ESP_OK) {
+                cJSON_AddNumberToObject(root, "quote_used", (double)q.used_count);
+            }
         }
     }
 
@@ -194,6 +195,8 @@ static esp_err_t api_display_nav_handler(httpd_req_t *req) {
     else if (strcmp(req->uri, "/api/display/previous") == 0) admin_set_request(ADMIN_REQ_PREV);
     else if (strcmp(req->uri, "/api/display/refresh") == 0) admin_set_request(ADMIN_REQ_REFRESH);
     else if (strcmp(req->uri, "/api/display/random") == 0) admin_set_request(ADMIN_REQ_NEXT); /* "next" is random */
+    else if (strcmp(req->uri, "/api/display/image_only") == 0) admin_set_request(ADMIN_REQ_IMAGE_ONLY);
+    else if (strcmp(req->uri, "/api/display/delete_image") == 0) admin_set_request(ADMIN_REQ_DELETE_IMAGE);
     admin_send_json(req, "{\"success\":true,\"message\":\"ok\"}");
     return ESP_OK;
 }
@@ -258,6 +261,12 @@ void api_core_register(httpd_handle_t server) {
     httpd_register_uri_handler(server, &u);
 
     u = (httpd_uri_t){ .uri="/api/display/random", .method=HTTP_POST, .handler=api_display_nav_handler, .user_ctx=NULL };
+    httpd_register_uri_handler(server, &u);
+
+    u = (httpd_uri_t){ .uri="/api/display/image_only", .method=HTTP_POST, .handler=api_display_nav_handler, .user_ctx=NULL };
+    httpd_register_uri_handler(server, &u);
+
+    u = (httpd_uri_t){ .uri="/api/display/delete_image", .method=HTTP_POST, .handler=api_display_nav_handler, .user_ctx=NULL };
     httpd_register_uri_handler(server, &u);
 
     u = (httpd_uri_t){ .uri="/api/mode", .method=HTTP_GET, .handler=api_mode_get_handler, .user_ctx=NULL };

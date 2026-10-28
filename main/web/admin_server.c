@@ -193,6 +193,23 @@ static esp_err_t image_file_handler(httpd_req_t *req) {
     return ESP_OK;
 }
 
+/* ---- Current AI image handler (/current_ai.png -> /sdcard/current_ai.png) ---- */
+
+static esp_err_t current_ai_image_handler(httpd_req_t *req) {
+    FILE *f = fopen("/sdcard/current_ai.png", "rb");
+    if (!f) { httpd_resp_send_404(req); return ESP_FAIL; }
+
+    httpd_resp_set_type(req, "image/png");
+    char buf[1024];
+    size_t n;
+    while ((n = fread(buf, 1, sizeof(buf), f)) > 0) {
+        if (httpd_resp_send_chunk(req, buf, n) != ESP_OK) { fclose(f); return ESP_FAIL; }
+    }
+    fclose(f);
+    httpd_resp_send_chunk(req, NULL, 0);
+    return ESP_OK;
+}
+
 /* ---- Start / stop ---- */
 
 esp_err_t admin_server_start(void) {
@@ -220,7 +237,9 @@ esp_err_t admin_server_start(void) {
        so the more-specific /api/ and /images/ routes win. */
     httpd_uri_t uri_images = { .uri="/images/*", .method=HTTP_GET, .handler=image_file_handler, .user_ctx=NULL };
     httpd_uri_t uri_static = { .uri="/*", .method=HTTP_GET, .handler=static_handler, .user_ctx=NULL };
+    httpd_uri_t uri_current_ai = { .uri="/current_ai.png", .method=HTTP_GET, .handler=current_ai_image_handler, .user_ctx=NULL };
     httpd_register_uri_handler(s_server, &uri_images);
+    httpd_register_uri_handler(s_server, &uri_current_ai);
     httpd_register_uri_handler(s_server, &uri_static);
 
     char ip[16] = "";

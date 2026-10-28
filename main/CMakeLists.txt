@@ -32,6 +32,7 @@ set(srcs
     "storage/image_library.c"
     "storage/quote_library.c"
     "storage/daily.c"
+    "storage/current.c"
     "storage/log_to_sd.c"
     # OTA (firmware upgrade via esp_ota_ops)
     "ota/ota_manager.c"

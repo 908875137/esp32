@@ -5,6 +5,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <sys/stat.h>
+#include <unistd.h>
 
 #include "esp_log.h"
 
@@ -90,5 +91,54 @@ esp_err_t daily_set(const char *date, uint32_t image_id, uint32_t quote_id) {
 
     ESP_LOGI(TAG, "recorded %s -> image %lu + quote %lu",
              date, (unsigned long)image_id, (unsigned long)quote_id);
+    return ESP_OK;
+}
+
+esp_err_t daily_update(const char *date, uint32_t image_id, uint32_t quote_id) {
+    if (!date || image_id == 0 || quote_id == 0) return ESP_ERR_INVALID_ARG;
+
+    const char *tmp = "/sdcard/daily.tmp";
+    FILE *in = fopen(DAILY_CSV_PATH, "r");
+    FILE *out = fopen(tmp, "w");
+    if (!out) { if (in) fclose(in); return ESP_FAIL; }
+
+    bool has_header = false;
+    bool updated = false;
+
+    if (in) {
+        char line[96];
+        while (fgets(line, sizeof(line), in)) {
+            char copy[96];
+            strncpy(copy, line, sizeof(copy) - 1);
+            copy[sizeof(copy) - 1] = '\0';
+            char *d = strtok(copy, ",\r\n");
+            char *iid = strtok(NULL, ",\r\n");
+            char *qid = strtok(NULL, ",\r\n");
+            if (d && strcmp(d, "date") == 0) {
+                has_header = true;
+                fputs(line, out);
+            } else if (d && iid && qid && strcmp(d, date) == 0) {
+                fprintf(out, "%s,%08lu,%08lu\n", date,
+                        (unsigned long)image_id, (unsigned long)quote_id);
+                updated = true;
+            } else {
+                fputs(line, out);
+            }
+        }
+        fclose(in);
+    }
+
+    if (!updated) {
+        if (!has_header) fputs("date,image_id,quote_id\n", out);
+        fprintf(out, "%s,%08lu,%08lu\n", date,
+                (unsigned long)image_id, (unsigned long)quote_id);
+    }
+    if (fclose(out) != 0) { unlink(tmp); return ESP_FAIL; }
+
+    unlink(DAILY_CSV_PATH);   /* FATFS f_rename won't overwrite an existing target */
+    if (rename(tmp, DAILY_CSV_PATH) != 0) {
+        unlink(tmp);
+        return ESP_FAIL;
+    }
     return ESP_OK;
 }

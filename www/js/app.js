@@ -64,13 +64,25 @@ function renderHome() {
 
   let curHtml = '<div style="color:var(--text-dim)">暂无记录</div>';
   if (cur.has_content) {
+    const isAi = cur.mode === 'ai';
+    const imgHtml = isAi
+      ? `<img src="/current_ai.png" onerror="this.style.display='none'" style="width:120px;height:72px;object-fit:cover;border-radius:6px;flex-shrink:0" />`
+      : (cur.image_name ? `<img src="/images/${encodeURIComponent(cur.image_name)}" style="width:120px;height:72px;object-fit:cover;border-radius:6px;flex-shrink:0" />` : '');
+
+    const byline = cur.quote_author
+      ? '—— ' + esc(cur.quote_author) + (cur.quote_source ? '（' + esc(cur.quote_source) + '）' : '')
+      : '';
+    const stats = isAi
+      ? ''
+      : `<div style="color:var(--text-dim);font-size:12px;margin-top:6px">图用 ${cur.image_used ?? 0} 次 · 句用 ${cur.quote_used ?? 0} 次</div>`;
+
     curHtml = `
       <div style="display:flex;gap:12px;align-items:flex-start">
-        ${cur.image_name ? `<img src="/images/${encodeURIComponent(cur.image_name)}" style="width:120px;height:72px;object-fit:cover;border-radius:6px;flex-shrink:0" />` : ''}
+        ${imgHtml}
         <div style="min-width:0">
           <div style="font-size:15px;line-height:1.5">${esc(cur.quote_text || '')}</div>
-          <div style="color:var(--text-dim);font-size:13px;margin-top:4px">${cur.quote_author ? '—— ' + esc(cur.quote_author) : ''}</div>
-          <div style="color:var(--text-dim);font-size:12px;margin-top:6px">${esc(cur.date || '')} · 图用 ${cur.image_used ?? 0} 次 · 句用 ${cur.quote_used ?? 0} 次</div>
+          <div style="color:var(--text-dim);font-size:13px;margin-top:4px">${byline}</div>
+          ${stats}
         </div>
       </div>
     `;
@@ -118,12 +130,16 @@ function renderHome() {
       <button class="btn" id="btn-random">随机</button>
       <button class="btn primary" id="btn-refresh">刷新</button>
       <button class="btn" id="btn-next">下一张</button>
+      <button class="btn" id="btn-image-only">只换图</button>
+      <button class="btn danger" id="btn-delete-image" ${state.mode === 'sd' ? '' : 'style="display:none"'}>删当前图</button>
     </div>
   `;
   $('#btn-prev').onclick = () => postDisplay('previous');
   $('#btn-next').onclick = () => postDisplay('next');
   $('#btn-refresh').onclick = () => postDisplay('refresh');
   $('#btn-random').onclick = () => postDisplay('random');
+  $('#btn-image-only').onclick = () => postDisplay('image_only');
+  $('#btn-delete-image').onclick = () => { if (confirm('删除当前图片？')) postDisplay('delete_image'); };
 }
 
 function renderImages() {

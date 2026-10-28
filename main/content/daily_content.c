@@ -36,6 +36,7 @@
 #include "image_library.h"
 #include "quote_library.h"
 #include "daily.h"
+#include "current.h"
 
 #include "daily_content.h"
 
@@ -93,51 +94,23 @@ static esp_err_t display_rgba(uint8_t *rgba) {
 
 /* ---- AI pipeline ---- */
 
-static void run_ai_pipeline(void) {
-    ESP_LOGI(TAG, "========== AI Daily Art Pipeline ==========");
-
-    if (!s_text_ok) {
-        s_text_ok = (text_renderer_init(s_cfg->font) == ESP_OK);
-        if (!s_text_ok) {
-            ESP_LOGW(TAG, "text_renderer_init failed — no text overlay");
-        }
-    }
-
-    char saved_quote[512] = {0};
-    char saved_source[512] = {0};
-
-    daily_quote_t *q = (daily_quote_t *)calloc(1, sizeof(daily_quote_t));
-    if (!q) return;
-    esp_err_t err = ai_generate_daily_quote(q);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "Daily quote failed — skipping image generation");
-        free(q);
-        return;
-    }
-
-    ESP_LOGI(TAG, "Daily quote: \"%s\" — %s (%s)", q->quote, q->author, q->source);
-
-    strncpy(saved_quote, q->quote, sizeof(saved_quote) - 1);
-    if (q->source[0]) {
-        snprintf(saved_source, sizeof(saved_source), "—— %s（%s）", q->author, q->source);
-    } else {
-        snprintf(saved_source, sizeof(saved_source), "—— %s", q->author);
-    }
+/* Generate a fresh AI image and composite `quote_text` (with byline) over it,
+   then display.  Shared by run_ai_pipeline() and the "image only" action. */
+static void ai_render_image(const char *quote_text, const char *author, const char *source) {
+    char byline[320] = {0};
+    if (source[0]) snprintf(byline, sizeof(byline), "—— %s（%s）", author, source);
+    else if (author[0]) snprintf(byline, sizeof(byline), "—— %s", author);
 
     char *image_prompt = (char *)malloc(AI_CHAT_RESPONSE_MAX_LEN);
-    if (!image_prompt) {
-        free(q);
-        return;
-    }
-    ai_build_image_prompt(q, image_prompt, AI_CHAT_RESPONSE_MAX_LEN);
-    free(q);
+    if (!image_prompt) return;
+    ai_build_image_prompt(NULL, image_prompt, AI_CHAT_RESPONSE_MAX_LEN);  /* quote unused — theme-random */
 
     ai_image_result_t *img_result = (ai_image_result_t *)calloc(1, sizeof(ai_image_result_t));
     if (!img_result) {
         free(image_prompt);
         return;
     }
-    err = ai_generate_image(image_prompt, "854x512", img_result);
+    esp_err_t err = ai_generate_image(image_prompt, "854x512", img_result);
     free(image_prompt);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "Image generation failed — skipping download");
@@ -155,13 +128,55 @@ static void run_ai_pipeline(void) {
         return;
     }
 
-    if (s_text_ok) {
-        text_render_overlay(rgba, 800, 480, saved_quote, saved_source);
+    if (s_text_ok && quote_text[0]) {
+        text_render_overlay(rgba, 800, 480, quote_text, byline);
     } else {
         ESP_LOGI(TAG, "Text renderer not available — showing image without text");
     }
 
     display_rgba(rgba);
+}
+
+static void run_ai_pipeline(void) {
+    ESP_LOGI(TAG, "========== AI Daily Art Pipeline ==========");
+
+    if (!s_text_ok) {
+        s_text_ok = (text_renderer_init(s_cfg->font) == ESP_OK);
+        if (!s_text_ok) {
+            ESP_LOGW(TAG, "text_renderer_init failed — no text overlay");
+        }
+    }
+
+    char saved_quote[512] = {0};
+    char saved_author[128] = {0};
+    char saved_source[256] = {0};
+
+    daily_quote_t *q = (daily_quote_t *)calloc(1, sizeof(daily_quote_t));
+    if (!q) return;
+    esp_err_t err = ai_generate_daily_quote(q);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Daily quote failed — skipping image generation");
+        free(q);
+        return;
+    }
+
+    ESP_LOGI(TAG, "Daily quote: \"%s\" — %s (%s)", q->quote, q->author, q->source);
+
+    strncpy(saved_quote, q->quote, sizeof(saved_quote) - 1);
+    strncpy(saved_author, q->author, sizeof(saved_author) - 1);
+    strncpy(saved_source, q->source, sizeof(saved_source) - 1);
+    free(q);
+
+    ai_render_image(saved_quote, saved_author, saved_source);
+
+    /* Record the current AI content so the Web UI can show it. */
+    current_content_t cur = {0};
+    cur.mode = THINKINK_MODE_AI;
+    strncpy(cur.quote_text, saved_quote, sizeof(cur.quote_text) - 1);
+    strncpy(cur.quote_author, saved_author, sizeof(cur.quote_author) - 1);
+    strncpy(cur.quote_source, saved_source, sizeof(cur.quote_source) - 1);
+    current_save(&cur);
+
     ESP_LOGI(TAG, "========== AI Daily Art Pipeline complete ==========");
 }
 
@@ -187,11 +202,15 @@ static void display_combined(uint32_t image_id, uint32_t quote_id) {
 
     bool have_quote = false;
     char quote_text[QUOTE_TEXT_MAX] = {0};
+    char quote_author[QUOTE_AUTHOR_MAX] = {0};
+    char quote_source[QUOTE_SOURCE_MAX] = {0};
     char source[320] = {0};
     if (quote_id != 0) {
         quote_t q;
         if (quote_library_get_by_id(quote_id, &q) == ESP_OK) {
             strncpy(quote_text, q.text, sizeof(quote_text) - 1);
+            strncpy(quote_author, q.author, sizeof(quote_author) - 1);
+            strncpy(quote_source, q.source, sizeof(quote_source) - 1);
             if (q.source[0]) snprintf(source, sizeof(source), "—— %s（%s）", q.author, q.source);
             else if (q.author[0]) snprintf(source, sizeof(source), "—— %s", q.author);
             have_quote = true;
@@ -209,6 +228,18 @@ static void display_combined(uint32_t image_id, uint32_t quote_id) {
     if (display_rgba(rgba) == ESP_OK) {
         if (image_id != 0) image_library_mark_used(image_id);
         if (have_quote && quote_id != 0) quote_library_mark_used(quote_id);
+
+        /* Record the current SD content for the Web UI. */
+        current_content_t cur = {0};
+        cur.mode = THINKINK_MODE_SD;
+        cur.image_id = image_id;
+        if (have_quote && quote_id != 0) {
+            cur.quote_id = quote_id;
+            strncpy(cur.quote_text, quote_text, sizeof(cur.quote_text) - 1);
+            strncpy(cur.quote_author, quote_author, sizeof(cur.quote_author) - 1);
+            strncpy(cur.quote_source, quote_source, sizeof(cur.quote_source) - 1);
+        }
+        current_save(&cur);
     }
 }
 
@@ -341,6 +372,93 @@ static void show_next_content(void) {
     show_image_with_quote(image_id);
 }
 
+/* ---- "swap image only" / "delete current image" ---- */
+
+/* "YYYY-MM-DD" for the current local time, or empty if no trustworthy clock. */
+static void get_today(char *out, size_t len) {
+    out[0] = '\0';
+    time_t now = time(NULL);
+    if (now > 946684800L) {   /* 2000-01-01 */
+        struct tm tmv;
+        localtime_r(&now, &tmv);
+        snprintf(out, len, "%04d-%02d-%02d",
+                 tmv.tm_year + 1900, tmv.tm_mon + 1, tmv.tm_mday);
+    }
+}
+
+/* Keep the current quote, show a fresh image (AI + SD). */
+static void show_image_only(void) {
+    if (s_cfg->mode == THINKINK_MODE_AI) {
+        current_content_t cur;
+        if (current_load(&cur) != ESP_OK || cur.mode != THINKINK_MODE_AI || cur.quote_text[0] == '\0') {
+            ESP_LOGW(TAG, "No current AI quote to reuse — running full AI pipeline");
+            run_ai_pipeline();
+            return;
+        }
+        if (!content_ensure_wifi()) {
+            ESP_LOGW(TAG, "No WiFi — can't regenerate AI image");
+            return;
+        }
+        ai_render_image(cur.quote_text, cur.quote_author, cur.quote_source);
+        current_save(&cur);   /* text unchanged; image refreshed (mode already AI) */
+        return;
+    }
+
+    if (!sd_card_is_mounted()) {
+        ESP_LOGW(TAG, "SD card not mounted");
+        return;
+    }
+
+    current_content_t cur;
+    if (current_load(&cur) != ESP_OK || cur.quote_id == 0) {
+        ESP_LOGW(TAG, "No current quote — falling back to next content");
+        show_next_content();
+        return;
+    }
+
+    uint32_t new_id = 0;
+    if (image_library_get_random_id(&new_id) != ESP_OK) {
+        ESP_LOGW(TAG, "No images in library");
+        return;
+    }
+    ensure_text_renderer();
+    display_combined(new_id, cur.quote_id);
+
+    char today[40] = {0};
+    get_today(today, sizeof(today));
+    if (today[0]) daily_update(today, new_id, cur.quote_id);
+}
+
+/* Delete the currently shown image (SD only), then swap to another. */
+static void delete_current_image(void) {
+    if (s_cfg->mode != THINKINK_MODE_SD) return;
+
+    if (!sd_card_is_mounted()) {
+        ESP_LOGW(TAG, "SD card not mounted");
+        return;
+    }
+
+    current_content_t cur;
+    if (current_load(&cur) != ESP_OK || cur.image_id == 0) {
+        ESP_LOGW(TAG, "No current image to delete");
+        return;
+    }
+
+    image_library_remove(cur.image_id);
+
+    uint32_t new_id = 0;
+    if (image_library_get_random_id(&new_id) != ESP_OK) {
+        ESP_LOGW(TAG, "No images left in library");
+        return;
+    }
+    ensure_text_renderer();
+    display_combined(new_id, cur.quote_id);
+
+    char today[40] = {0};
+    get_today(today, sizeof(today));
+    if (today[0]) daily_update(today, new_id, cur.quote_id);
+}
+
 /* ---- public API ---- */
 
 void content_init(const thinkink_config_t *cfg) {
@@ -404,6 +522,12 @@ void content_handle_request(int req) {
             admin_server_set_mode(THINKINK_MODE_SD);
             show_next_content();
         }
+        break;
+    case ADMIN_REQ_IMAGE_ONLY:
+        show_image_only();
+        break;
+    case ADMIN_REQ_DELETE_IMAGE:
+        delete_current_image();
         break;
     default:
         break;

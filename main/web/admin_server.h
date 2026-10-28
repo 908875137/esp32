@@ -34,6 +34,8 @@ typedef enum {
     ADMIN_REQ_REFRESH,
     ADMIN_REQ_MODE_AI,
     ADMIN_REQ_MODE_SD,
+    ADMIN_REQ_IMAGE_ONLY,      /* swap image, keep the current quote (AI + SD) */
+    ADMIN_REQ_DELETE_IMAGE,    /* delete the current image (SD only) */
 } admin_request_t;
 
 /**

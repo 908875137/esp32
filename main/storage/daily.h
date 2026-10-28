@@ -39,6 +39,12 @@ esp_err_t daily_get_last(char *date_out, size_t date_len, uint32_t *image_id, ui
  */
 esp_err_t daily_set(const char *date, uint32_t image_id, uint32_t quote_id);
 
+/**
+ * Overwrite `date`'s image_id/quote_id in daily.csv (used after the user
+ * swaps or deletes the current image).  Appends a row if the date has none.
+ */
+esp_err_t daily_update(const char *date, uint32_t image_id, uint32_t quote_id);
+
 #ifdef __cplusplus
 }
 #endif
