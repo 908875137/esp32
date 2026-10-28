@@ -30,6 +30,21 @@ typedef struct {
  */
 esp_err_t ai_generate_daily_quote(daily_quote_t *quote);
 
+/* ---- Quote history (dedup + web) ---- */
+
+/* One entry in the AI quote history (mirrors quotes.csv's text/author/source). */
+typedef struct {
+    char text[512];
+    char author[128];
+    char source[256];
+} ai_history_entry_t;
+
+/*
+ * Read up to `max` AI-history entries (newest first) into `out`.  Returns the
+ * number read (0 if none).  `out` must have room for `max` entries.
+ */
+int ai_history_read(ai_history_entry_t *out, int max);
+
 /* ---- Image generation (Stage 2) ---- */
 
 typedef struct {

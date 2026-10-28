@@ -34,6 +34,12 @@ esp_err_t log_to_sd_init(void);
  */
 int log_to_sd_tail(char *buf, size_t buf_len, size_t max_bytes);
 
+/**
+ * Truncate the log file to zero length (clear its contents).  The running log
+ * fd is closed and reopened with O_TRUNC so subsequent logging starts fresh.
+ */
+esp_err_t log_to_sd_clear(void);
+
 #ifdef __cplusplus
 }
 #endif

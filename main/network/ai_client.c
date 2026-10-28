@@ -132,13 +132,114 @@ static char *http_post_json(const char *url, const char *json_body,
 /* ================================================================
  * Quote history — remember the most recent generated quotes so we can feed
  * them back to DeepSeek and avoid repetition.
+ *
+ * Format mirrors quotes.csv's core columns (one row per line, quoted CSV):
+ *   "text","author","source"
  * ================================================================ */
 
-#define AI_HISTORY_PATH   "/sdcard/ai_history.txt"
-#define AI_HISTORY_BUF    2048
+#define AI_HISTORY_PATH      "/sdcard/ai_history.txt"
+#define AI_HISTORY_BUF       2048           /* dedup prompt buffer */
+#define AI_HISTORY_MAX_FILE  (128 * 1024)   /* cap on the history file read */
 
-/* Read the tail of the history file (most recent quotes).  Returns the number
-   of bytes read, or 0 if there is no history yet. */
+/* Parse one CSV field starting at *pp into out.  Handles quoted fields ("" is
+   an escaped quote).  Advances *pp past the field and any following comma. */
+static bool csv_field(const char **pp, char *out, size_t out_len) {
+    const char *p = *pp;
+    out[0] = '\0';
+    if (!p || !*p) return false;
+    size_t o = 0;
+    if (*p == '"') {
+        p++;
+        while (*p && o < out_len - 1) {
+            if (*p == '"') {
+                if (p[1] == '"') { out[o++] = '"'; p += 2; }
+                else { p++; break; }
+            } else {
+                out[o++] = *p++;
+            }
+        }
+        out[o] = '\0';
+        if (*p == ',') p++;
+        *pp = p;
+        return true;
+    }
+    while (*p && *p != ',' && *p != '\r' && *p != '\n' && o < out_len - 1) out[o++] = *p++;
+    out[o] = '\0';
+    if (*p == ',') p++;
+    *pp = p;
+    return true;
+}
+
+/* Append one generated quote as a CSV row (text/author/source).  POSIX
+   O_APPEND because stdio fopen("a") does not flush on FATFS. */
+static void append_ai_history(const daily_quote_t *q) {
+    if (!q || !q->quote[0]) return;
+    int fd = open(AI_HISTORY_PATH, O_WRONLY | O_CREAT | O_APPEND, 0666);
+    if (fd < 0) return;
+    char line[1024];
+    int n = snprintf(line, sizeof(line), "\"%s\",\"%s\",\"%s\"\n",
+                     q->quote, q->author, q->source);
+    if (n > 0) write(fd, line, (size_t)n);
+    close(fd);
+}
+
+/* Read the AI history into out (newest first).  Returns the number of entries. */
+int ai_history_read(ai_history_entry_t *out, int max) {
+    if (!out || max <= 0) return 0;
+
+    FILE *f = fopen(AI_HISTORY_PATH, "rb");
+    if (!f) return 0;
+
+    fseek(f, 0, SEEK_END);
+    long size = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    if (size < 0) size = 0;
+    if (size > AI_HISTORY_MAX_FILE) size = AI_HISTORY_MAX_FILE;
+
+    char *raw = (char *)malloc((size_t)size + 1);
+    if (!raw) { fclose(f); return 0; }
+    size_t n = fread(raw, 1, (size_t)size, f);
+    fclose(f);
+    raw[n] = '\0';
+
+    int count = 0;
+    char *line = raw;
+    while (line < raw + n && count < max) {
+        char *end = strchr(line, '\n');
+        if (end) *end = '\0';
+        char *cr = strchr(line, '\r');
+        if (cr) *cr = '\0';
+
+        const char *p = line;
+        char text[512], author[128], source[256];
+        csv_field(&p, text, sizeof(text));
+        csv_field(&p, author, sizeof(author));
+        csv_field(&p, source, sizeof(source));
+
+        if (text[0] != '\0') {
+            strncpy(out[count].text, text, sizeof(out[count].text) - 1);
+            out[count].text[sizeof(out[count].text) - 1] = '\0';
+            strncpy(out[count].author, author, sizeof(out[count].author) - 1);
+            out[count].author[sizeof(out[count].author) - 1] = '\0';
+            strncpy(out[count].source, source, sizeof(out[count].source) - 1);
+            out[count].source[sizeof(out[count].source) - 1] = '\0';
+            count++;
+        }
+        if (!end) break;
+        line = end + 1;
+    }
+    free(raw);
+
+    for (int i = 0, j = count - 1; i < j; i++, j--) {
+        ai_history_entry_t tmp = out[i];
+        out[i] = out[j];
+        out[j] = tmp;
+    }
+    return count;
+}
+
+/* Format the recent history as plain "quote —— author" lines for the DeepSeek
+   prompt.  Returns bytes written (0 if none). */
 static size_t read_ai_history(char *buf, size_t buf_size) {
     buf[0] = '\0';
     FILE *f = fopen(AI_HISTORY_PATH, "rb");
@@ -146,27 +247,37 @@ static size_t read_ai_history(char *buf, size_t buf_size) {
 
     fseek(f, 0, SEEK_END);
     long size = ftell(f);
-    if (size <= 0) {
-        fclose(f);
-        return 0;
-    }
+    if (size <= 0) { fclose(f); return 0; }
     size_t want = (size_t)size > buf_size - 1 ? buf_size - 1 : (size_t)size;
     fseek(f, size - (long)want, SEEK_SET);
-    size_t n = fread(buf, 1, want, f);
-    buf[n] = '\0';
-    fclose(f);
-    return n;
-}
 
-/* Append one quote.  Uses POSIX O_APPEND because stdio fopen("a") does not
-   actually flush writes on FATFS. */
-static void append_ai_history(const char *quote) {
-    if (!quote || !quote[0]) return;
-    int fd = open(AI_HISTORY_PATH, O_WRONLY | O_CREAT | O_APPEND, 0666);
-    if (fd < 0) return;
-    write(fd, quote, strlen(quote));
-    write(fd, "\n", 1);
-    close(fd);
+    char *raw = (char *)malloc(want + 1);
+    if (!raw) { fclose(f); return 0; }
+    size_t n = fread(raw, 1, want, f);
+    fclose(f);
+    raw[n] = '\0';
+
+    size_t o = 0;
+    char *line = raw;
+    while (line < raw + n && o < buf_size - 1) {
+        char *end = strchr(line, '\n');
+        if (end) *end = '\0';
+        const char *p = line;
+        char text[512], author[128];
+        csv_field(&p, text, sizeof(text));
+        csv_field(&p, author, sizeof(author));
+        if (text[0] != '\0') {
+            int w = snprintf(buf + o, buf_size - o, "%s%s%s\n",
+                             text, author[0] ? " —— " : "", author);
+            if (w < 0) break;
+            if ((size_t)w >= buf_size - o) { o = buf_size - 1; break; }
+            o += (size_t)w;
+        }
+        if (!end) break;
+        line = end + 1;
+    }
+    free(raw);
+    return o;
 }
 
 /* ================================================================
@@ -309,8 +420,8 @@ esp_err_t ai_generate_daily_quote(daily_quote_t *quote) {
     ESP_LOGI(TAG, "Type: %s", quote->type);
     ESP_LOGI(TAG, "Mood: %s", quote->mood);
 
-    /* Remember this quote so the next generation avoids it. */
-    append_ai_history(quote->quote);
+    /* Remember this quote (text/author/source) so the next generation avoids it. */
+    append_ai_history(quote);
 
     return ESP_OK;
 }

@@ -284,6 +284,17 @@ static esp_err_t api_logs_handler(httpd_req_t *req) {
     return ESP_OK;
 }
 
+/* ---- POST /api/logs/clear ---- */
+
+static esp_err_t api_logs_clear_handler(httpd_req_t *req) {
+    if (log_to_sd_clear() != ESP_OK) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "clear failed");
+        return ESP_FAIL;
+    }
+    admin_send_json(req, "{\"success\":true}");
+    return ESP_OK;
+}
+
 /* ---- OTA firmware upgrade ---- */
 
 static esp_err_t api_ota_status_handler(httpd_req_t *req) {
@@ -354,6 +365,9 @@ void api_files_register(httpd_handle_t server) {
     httpd_register_uri_handler(server, &u);
 
     u = (httpd_uri_t){ .uri="/api/logs", .method=HTTP_GET, .handler=api_logs_handler, .user_ctx=NULL };
+    httpd_register_uri_handler(server, &u);
+
+    u = (httpd_uri_t){ .uri="/api/logs/clear", .method=HTTP_POST, .handler=api_logs_clear_handler, .user_ctx=NULL };
     httpd_register_uri_handler(server, &u);
 
     u = (httpd_uri_t){ .uri="/api/ota/status", .method=HTTP_GET, .handler=api_ota_status_handler, .user_ctx=NULL };

@@ -91,9 +91,17 @@ esp_err_t sleep_manager_enter(int refresh_hour) {
     gpio_wakeup_enable(SLEEP_BUTTON_GPIO, GPIO_INTR_LOW_LEVEL);
     esp_sleep_enable_gpio_wakeup();
 
+    /* Keep GPIO48 pulled up during light sleep.  The default sleep config
+       isolates GPIOs (drops internal pull-ups), which leaves the button pin
+       floating and falsely triggers a LOW_LEVEL wakeup. */
+    gpio_sleep_set_direction(SLEEP_BUTTON_GPIO, GPIO_MODE_INPUT);
+    gpio_sleep_set_pull_mode(SLEEP_BUTTON_GPIO, GPIO_PULLUP_ONLY);
+    gpio_sleep_sel_en(SLEEP_BUTTON_GPIO);
+
     /* ---- 4. Let the log flush before sleeping ---- */
     vTaskDelay(pdMS_TO_TICKS(100));
 
+    ESP_LOGI(TAG, "GPIO48 level before sleep = %d", gpio_get_level(SLEEP_BUTTON_GPIO));
     ESP_LOGI(TAG, "Entering light sleep...");
     esp_light_sleep_start();
 

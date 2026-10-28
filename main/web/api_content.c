@@ -14,6 +14,7 @@
 #include "cJSON.h"
 
 #include "admin_server.h"
+#include "ai_client.h"
 #include "image_library.h"
 #include "quote_library.h"
 
@@ -341,6 +342,109 @@ static esp_err_t api_quotes_import_handler(httpd_req_t *req) {
     return ESP_OK;
 }
 
+/* ---- GET /api/ai/quotes (AI-generated quote history) ---- */
+
+#define AI_QUOTES_MAX_ENTRIES 100
+
+static esp_err_t api_ai_quotes_handler(httpd_req_t *req) {
+    ai_history_entry_t *entries = (ai_history_entry_t *)calloc(AI_QUOTES_MAX_ENTRIES, sizeof(ai_history_entry_t));
+    if (!entries) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "oom");
+        return ESP_FAIL;
+    }
+
+    int count = ai_history_read(entries, AI_QUOTES_MAX_ENTRIES);
+
+    cJSON *root = cJSON_CreateObject();
+    cJSON *arr = cJSON_AddArrayToObject(root, "quotes");
+    for (int i = 0; i < count; i++) {
+        cJSON *item = cJSON_CreateObject();
+        cJSON_AddStringToObject(item, "text", entries[i].text);
+        cJSON_AddStringToObject(item, "author", entries[i].author);
+        cJSON_AddStringToObject(item, "source", entries[i].source);
+        cJSON_AddItemToArray(arr, item);
+    }
+    cJSON_AddNumberToObject(root, "count", (double)count);
+    cJSON_AddBoolToObject(root, "success", true);
+    char *json = cJSON_PrintUnformatted(root);
+    cJSON_Delete(root);
+    free(entries);
+    admin_send_json(req, json ? json : "{}");
+    free(json);
+    return ESP_OK;
+}
+
+/* ---- POST /api/ai/quotes/import  { "quotes": ["...", "..."] } ---- */
+
+static esp_err_t api_ai_quotes_import_handler(httpd_req_t *req) {
+    const int max_body = 16384;
+    char *body = (char *)malloc(max_body);
+    if (!body) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "oom");
+        return ESP_FAIL;
+    }
+
+    int total = 0, received;
+    while (total < max_body - 1 &&
+           (received = httpd_req_recv(req, body + total, max_body - 1 - total)) > 0) {
+        total += received;
+    }
+    body[total] = '\0';
+
+    cJSON *j = cJSON_Parse(body);
+    free(body);
+    if (!j) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "invalid json");
+        return ESP_FAIL;
+    }
+
+    cJSON *arr = cJSON_GetObjectItem(j, "quotes");
+    if (!cJSON_IsArray(arr)) {
+        cJSON_Delete(j);
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "quotes array required");
+        return ESP_FAIL;
+    }
+
+    /* quote_library_add() normalises + skips exact-text duplicates, so we can
+       just feed every selected quote through it and count the net increase. */
+    uint32_t before = 0, after = 0;
+    quote_library_count(&before);
+
+    int processed = 0;
+    int n = cJSON_GetArraySize(arr);
+    for (int i = 0; i < n; i++) {
+        cJSON *item = cJSON_GetArrayItem(arr, i);
+        if (!cJSON_IsObject(item)) continue;
+
+        const char *text = "", *author = "", *source = "";
+        cJSON *t = cJSON_GetObjectItem(item, "text");
+        cJSON *a = cJSON_GetObjectItem(item, "author");
+        cJSON *s = cJSON_GetObjectItem(item, "source");
+        if (cJSON_IsString(t) && t->valuestring) text = t->valuestring;
+        if (cJSON_IsString(a) && a->valuestring) author = a->valuestring;
+        if (cJSON_IsString(s) && s->valuestring) source = s->valuestring;
+        if (!text[0]) continue;
+
+        uint32_t id = 0;
+        if (quote_library_add(text, author, source, &id) == ESP_OK) processed++;
+    }
+    cJSON_Delete(j);
+
+    quote_library_count(&after);
+    int added = (int)(after - before);
+    int skipped = processed - added;
+
+    cJSON *resp = cJSON_CreateObject();
+    cJSON_AddBoolToObject(resp, "success", true);
+    cJSON_AddNumberToObject(resp, "added", (double)added);
+    cJSON_AddNumberToObject(resp, "skipped", (double)skipped);
+    char *json = cJSON_PrintUnformatted(resp);
+    cJSON_Delete(resp);
+    admin_send_json(req, json ? json : "{}");
+    free(json);
+    return ESP_OK;
+}
+
 /* ---- CSV export ---- */
 
 static esp_err_t export_csv(httpd_req_t *req, const char *path, const char *download_name) {
@@ -395,6 +499,12 @@ void api_content_register(httpd_handle_t server) {
     httpd_register_uri_handler(server, &u);
 
     u = (httpd_uri_t){ .uri="/api/quotes/*", .method=HTTP_DELETE, .handler=api_quote_delete_handler, .user_ctx=NULL };
+    httpd_register_uri_handler(server, &u);
+
+    u = (httpd_uri_t){ .uri="/api/ai/quotes", .method=HTTP_GET, .handler=api_ai_quotes_handler, .user_ctx=NULL };
+    httpd_register_uri_handler(server, &u);
+
+    u = (httpd_uri_t){ .uri="/api/ai/quotes/import", .method=HTTP_POST, .handler=api_ai_quotes_import_handler, .user_ctx=NULL };
     httpd_register_uri_handler(server, &u);
 
     u = (httpd_uri_t){ .uri="/api/export/images.csv", .method=HTTP_GET, .handler=api_export_images_handler, .user_ctx=NULL };

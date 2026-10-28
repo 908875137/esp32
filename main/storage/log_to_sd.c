@@ -90,3 +90,21 @@ int log_to_sd_tail(char *buf, size_t buf_len, size_t max_bytes) {
     fclose(f);
     return (int)n;
 }
+
+esp_err_t log_to_sd_clear(void) {
+    /* Close the append fd and reopen with O_TRUNC so the file starts empty.
+       (unlink() would leave the open fd writing to a deleted inode on FATFS.) */
+    if (s_log_fd >= 0) {
+        close(s_log_fd);
+        s_log_fd = -1;
+    }
+
+    s_log_fd = open(LOG_TO_SD_PATH, O_WRONLY | O_CREAT | O_TRUNC, 0666);
+    if (s_log_fd < 0) {
+        ESP_LOGW(TAG, "cannot reopen %s for clear", LOG_TO_SD_PATH);
+        return ESP_FAIL;
+    }
+
+    ESP_LOGI(TAG, "log cleared");
+    return ESP_OK;
+}

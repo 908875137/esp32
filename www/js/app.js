@@ -14,6 +14,7 @@ const state = {
   current: null,
   stats: null,
   daily: [],
+  aiQuotes: [],
   logs: '',
   files: [],
   filesPath: '',
@@ -205,8 +206,30 @@ function renderQuotes() {
         </div>
       `).join('');
 
+  const aiQs = state.aiQuotes || [];
+  const aiReversed = aiQs.slice().reverse();
+  const aiHtml = aiQs.length === 0
+    ? '<div style="color:var(--text-dim);font-size:13px">暂无 AI 生成记录</div>'
+    : aiReversed.map((q, i) =>
+        `<label style="display:flex;gap:8px;align-items:flex-start;padding:6px 0;border-bottom:1px solid #262626">
+          <input type="checkbox" class="ai-qcb" data-idx="${i}" style="margin-top:4px;flex-shrink:0" />
+          <span style="font-size:15px;line-height:1.5;min-width:0">${esc(q.text)}${q.author ? `<div style="color:var(--text-dim);font-size:13px;margin-top:2px">—— ${esc(q.author)}${q.source ? '（' + esc(q.source) + '）' : ''}</div>` : ''}</span>
+        </label>`
+      ).join('');
+
   page.innerHTML = `
     <h2>语录</h2>
+
+    <div class="card">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+        <div style="font-size:14px;font-weight:600">AI 生成历史（最近）</div>
+        <label style="font-size:13px;color:var(--text-dim)"><input type="checkbox" id="ai-sel-all" /> 全选</label>
+      </div>
+      ${aiHtml}
+      <div class="btn-row" style="margin-top:10px">
+        <button class="btn primary" id="btn-ai-import">添加到语录</button>
+      </div>
+    </div>
 
     <div class="card">
       <div style="font-size:14px;font-weight:600;margin-bottom:10px">添加一句</div>
@@ -249,6 +272,8 @@ function renderQuotes() {
   $('#q-export').onclick = () => window.open('/api/export/quotes.csv', '_blank');
   $$('#page [data-qedit]').forEach(b => b.onclick = () => editQuote(b.dataset.qedit));
   $$('#page [data-qdel]').forEach(b => b.onclick = () => deleteQuote(b.dataset.qdel));
+  $('#ai-sel-all').onchange = (e) => $$('#page .ai-qcb').forEach(cb => cb.checked = e.target.checked);
+  $('#btn-ai-import').onclick = importAiQuotes;
 }
 
 function renderSettings() {
@@ -310,6 +335,7 @@ function renderLogs() {
     <h2>日志</h2>
     <div class="btn-row" style="margin-bottom:12px">
       <button class="btn primary" id="btn-logs-reload">刷新</button>
+      <button class="btn danger" id="btn-logs-clear">清空</button>
       <span class="label" style="margin-left:auto">最近 ${text.length} 字节</span>
     </div>
     <div class="card">
@@ -317,6 +343,7 @@ function renderLogs() {
     </div>
   `;
   $('#btn-logs-reload').onclick = loadLogs;
+  $('#btn-logs-clear').onclick = clearLogs;
 }
 
 async function loadLogs() {
@@ -325,6 +352,16 @@ async function loadLogs() {
     state.logs = (typeof r === 'string') ? r : '';
   } catch (e) { state.logs = ''; }
   if (state.page === 'logs') renderLogs();
+}
+
+async function clearLogs() {
+  if (!confirm('确认清空日志文件？')) return;
+  try {
+    await api('/api/logs/clear', { method: 'POST' });
+    state.logs = '';
+    toast('日志已清空');
+    if (state.page === 'logs') renderLogs();
+  } catch (e) { toast('清空失败: ' + e.message); }
 }
 
 function renderFiles() {
@@ -417,7 +454,7 @@ function navigate(page) {
   RENDERERS[page]();
   if (page === 'home') { loadCurrent(); loadStats(); loadDaily(); }
   if (page === 'images') loadImages();
-  if (page === 'quotes') loadQuotes();
+  if (page === 'quotes') { loadQuotes(); loadAiQuotes(); }
   if (page === 'logs') loadLogs();
   if (page === 'files') loadFiles();
 }
@@ -447,6 +484,26 @@ async function loadQuotes() {
     state.quotesTotal = r.total || 0;
   } catch (e) { state.quotes = []; state.quotesTotal = 0; }
   if (state.page === 'quotes') renderQuotes();
+}
+
+async function loadAiQuotes() {
+  try {
+    const r = await api('/api/ai/quotes');
+    state.aiQuotes = r.quotes || [];
+  } catch (e) { state.aiQuotes = []; }
+  if (state.page === 'quotes') renderQuotes();
+}
+
+async function importAiQuotes() {
+  const aiReversed = (state.aiQuotes || []).slice().reverse();
+  const checked = $$('#page .ai-qcb:checked').map(cb => aiReversed[Number(cb.dataset.idx)]);
+  if (checked.length === 0) { toast('请先勾选要添加的句子'); return; }
+  try {
+    const r = await api('/api/ai/quotes/import', { method: 'POST', body: JSON.stringify({ quotes: checked }) });
+    const skip = r.skipped ? '，跳过重复 ' + r.skipped + ' 句' : '';
+    toast(`已添加 ${r.added} 句${skip}`);
+    await loadQuotes();
+  } catch (e) { toast('添加失败: ' + e.message); }
 }
 
 async function addQuote() {

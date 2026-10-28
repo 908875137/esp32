@@ -200,7 +200,7 @@ esp_err_t admin_server_start(void) {
 
     httpd_config_t cfg = HTTPD_DEFAULT_CONFIG();
     cfg.lru_purge_enable = true;
-    cfg.max_uri_handlers = 32;
+    cfg.max_uri_handlers = 48;
     cfg.max_open_sockets = 8;
     cfg.stack_size = 16384;           /* upload handler has a 4KB body buffer */
     cfg.uri_match_fn = httpd_uri_match_wildcard;   /* enable wildcard routes */
