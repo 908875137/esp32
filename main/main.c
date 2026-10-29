@@ -16,6 +16,8 @@
 #include <stdio.h>
 #include <stdint.h>
 #include <string.h>
+#include <stdlib.h>
+#include <time.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_system.h"
@@ -130,6 +132,11 @@ int app_main(void) {
         nvs_flash_erase();
         nvs_flash_init();
     }
+
+    /* Set timezone to China Standard Time (UTC+8) so localtime() and the log
+       timestamps show Beijing time. */
+    setenv("TZ", "CST-8", 1);
+    tzset();
 
     sleep_wake_cause_t wc = sleep_manager_get_wake_cause();
     esp_reset_reason_t rr = esp_reset_reason();

@@ -31,7 +31,7 @@ extern char ai_image_model[64];
 
 /* ---- HTTP client settings ---- */
 #define AI_IMAGE_TIMEOUT_MS  120000  /* image generation can be slow */
-#define AI_CHAT_TIMEOUT_MS   120000  /* deepseek-v4-pro is a reasoning model — slow */
+#define AI_CHAT_TIMEOUT_MS   180000  /* deepseek-v4-pro is a reasoning model — can exceed 2 min */
 
 /* ---- Buffer sizes ---- */
 #define AI_IMAGE_URL_MAX_LEN       2048

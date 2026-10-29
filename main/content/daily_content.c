@@ -301,9 +301,19 @@ static void sntp_sync_once(void) {
         ESP_LOGW(TAG, "SNTP init failed");
         return;
     }
-    esp_netif_sntp_sync_wait(pdMS_TO_TICKS(5000));
+    esp_err_t err = esp_netif_sntp_sync_wait(pdMS_TO_TICKS(10000));
     esp_netif_sntp_deinit();
-    synced = true;
+    if (err == ESP_OK) {
+        synced = true;   /* only lock out after a successful sync */
+        time_t now = time(NULL);
+        struct tm tmv;
+        localtime_r(&now, &tmv);
+        ESP_LOGI(TAG, "SNTP synced: %04d-%02d-%02d %02d:%02d:%02d",
+                 tmv.tm_year + 1900, tmv.tm_mon + 1, tmv.tm_mday,
+                 tmv.tm_hour, tmv.tm_min, tmv.tm_sec);
+    } else {
+        ESP_LOGW(TAG, "SNTP sync failed (%s) — will retry", esp_err_to_name(err));
+    }
 }
 
 bool content_ensure_wifi(void) {

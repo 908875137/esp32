@@ -39,6 +39,7 @@ static char s_ap_ssid[32] = {0};
 static char s_sta_ip[16] = {0};
 static int  s_retry_count = 0;
 static bool s_provisioning = false;
+static bool s_disconnecting = false;   /* true while powering down for sleep */
 
 /* ================================================================
  * NVS helpers
@@ -146,8 +147,8 @@ static void wifi_event_handler(void *arg, esp_event_base_t base,
         case WIFI_EVENT_STA_DISCONNECTED: {
             wifi_event_sta_disconnected_t *ev = (wifi_event_sta_disconnected_t *)data;
             const char *rs = disc_reason_str(ev->reason);
-            if (s_provisioning) {
-                ESP_LOGI(TAG, "STA disconnected (prov): reason=%d(%s)", ev->reason, rs);
+            if (s_provisioning || s_disconnecting) {
+                ESP_LOGI(TAG, "STA disconnected (prov/disconnect): reason=%d(%s)", ev->reason, rs);
                 break;
             }
             if (s_retry_count < WIFI_STA_MAX_RETRY) {
@@ -253,6 +254,7 @@ esp_err_t wifi_manager_connect(void) {
 
     s_retry_count = 0;
     s_provisioning = false;
+    s_disconnecting = false;
 
     /* Configure as STA */
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
@@ -357,6 +359,9 @@ bool wifi_manager_is_connected(void) {
 
 esp_err_t wifi_manager_disconnect(void) {
     ESP_LOGI(TAG, "Disconnecting and powering down WiFi");
+    /* Prevent the STA_DISCONNECTED event from triggering an automatic
+       reconnect — we're powering down for sleep, not roaming. */
+    s_disconnecting = true;
     esp_err_t err = esp_wifi_stop();
     if (s_wifi_evt) {
         xEventGroupClearBits(s_wifi_evt, WIFI_CONNECTED_BIT | WIFI_FAIL_BIT);

@@ -9,6 +9,8 @@
 #include <stdio.h>
 #include <stdarg.h>
 #include <string.h>
+#include <time.h>
+#include <sys/time.h>
 #include <sys/stat.h>
 #include <fcntl.h>
 #include <unistd.h>
@@ -33,8 +35,20 @@ static int log_vprintf_hook(const char *fmt, va_list args) {
         ret = s_orig_vprintf(fmt, args);
     }
 
-    /* 2. mirror the same line to the SD file */
+    /* 2. mirror the same line to the SD file, prefixed with a wall-clock
+       timestamp (once the RTC has been SNTP-synced). */
     if (s_log_fd >= 0) {
+        struct timeval tv;
+        if (gettimeofday(&tv, NULL) == 0 && tv.tv_sec > 946684800L) {
+            struct tm tmv;
+            localtime_r(&tv.tv_sec, &tmv);
+            char ts[40];
+            int tsl = snprintf(ts, sizeof(ts), "[%04d-%02d-%02d %02d:%02d:%02d] ",
+                               tmv.tm_year + 1900, tmv.tm_mon + 1, tmv.tm_mday,
+                               tmv.tm_hour, tmv.tm_min, tmv.tm_sec);
+            if (tsl > 0) write(s_log_fd, ts, (size_t)tsl);
+        }
+
         char buf[256];
         int n = vsnprintf(buf, sizeof(buf), fmt, args_copy);
         if (n > 0) {
